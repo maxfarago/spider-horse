@@ -1,0 +1,35 @@
+{
+  "sunset-sky.hdr": {
+    "title": "Joburg Central Sunset",
+    "authors": [
+      "Dimitrios Savva",
+      "Greg Zaal"
+    ],
+    "source": "https://polyhaven.com/a/sunset_jhbcentral",
+    "download": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/sunset_jhbcentral_1k.hdr",
+    "license": "CC0 1.0",
+    "licenseUrl": "https://polyhaven.com/license",
+    "usage": "Environment illumination and reflections only."
+  },
+  "cloud-sky.hdr": {
+    "title": "Kloofendal 48d Partly Cloudy (Pure Sky)",
+    "authors": [
+      "Greg Zaal",
+      "Jarod Guest"
+    ],
+    "source": "https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky",
+    "download": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/kloofendal_48d_partly_cloudy_puresky_1k.hdr",
+    "license": "CC0 1.0",
+    "licenseUrl": "https://polyhaven.com/license",
+    "usage": "Photographic cloud backdrop with art-directed atmosphere tint."
+  },
+  "warhorse.glb": {
+    "title": "Warhorse Lite",
+    "author": "Literock Studios",
+    "source": "https://literock-studios.itch.io/warhorse-lite",
+    "license": "Warhorse Lite Free Licence",
+    "licenseFile": "LICENSE.warhorse.txt",
+    "usage": "Licensed model packaged inside Skystride; local animation blending and saddle tether added. Do not redistribute as a standalone asset.",
+    "provenance": "Meshy-assisted base mesh and textures, rigging and animation by Literock Studios."
+  }
+}

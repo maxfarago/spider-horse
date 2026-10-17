@@ -1,0 +1,14 @@
+{
+  "name": "spider-horse",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test physics.test.js horse.test.js web.test.js controls.test.js web-target.test.js anchor-camera.test.js",
+    "check": "node --check game.js && node --check city.js && node --check horse.js && node --check physics.js && node --check server.mjs && node --check cinematics.js && node --check web.js && node --check controls.js && node --check web-target.js && node --check anchor-camera.js",
+    "build": "node build.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
