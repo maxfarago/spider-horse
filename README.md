@@ -29,20 +29,32 @@ Hold Space to attach a web; release to soar. In the air, left/right cycle nearby
 - `*.test.js`: Node test runner regressions (46 tests at extraction).
 - `assets/`, `vendor/`: models, HDR environments, Three.js and license notices.
 
-## GitHub and deployment handoff
+## GitHub and Cloudflare Pages
 
-This folder was extracted from a different local project without its Git history, environment files, screenshots or other application code. A fresh local Git repository holds only this game. No GitHub remote or hosting project has been created, and nothing has been uploaded.
+Private source repository: https://github.com/maxfarago/spider-horse
 
-Suggested next steps in Codex:
+The default and Pages production branch is `codex/standalone`. GitHub Actions runs tests, syntax checks and the static build on pushes and pull requests. It does not deploy.
 
-1. Open this folder as the project and run test, check and build.
-2. Create a **private** GitHub repository and connect this fresh repository. Preserve all third-party license notices; the horse asset has its own redistribution restrictions in `assets/LICENSE.warhorse.txt`.
-3. Set up Cloudflare Pages to fit the existing Neigho Geo hosting approach: build command `npm run build`, output directory `dist`, Node 20 or newer. GitHub preview deployments can run test/check/build before publishing.
-4. Confirm the desired game URL/domain, connect it, then add the game to the separate Neigho Geo registry. Neither that registry nor any hosting account has been changed here.
+An empty Cloudflare Pages project named `spider-horse` has been created in the same account as Neigho Geo. `wrangler.toml` records its account and output directory. No game files have been deployed, no custom domain has been attached, and the Neigho Geo registry has not been changed. Discuss and approve the intended domain before the first deployment; even a preview upload publishes a reachable URL.
 
-Suggested Codex opening prompt:
+This project uses Direct Upload for deliberate releases. GitHub pushes alone do not publish it. GitHub Actions can be extended to upload releases later; switching to Cloudflare's built-in Git integration requires a new Pages project. See the [Cloudflare Direct Upload guide](https://developers.cloudflare.com/pages/get-started/direct-upload/).
 
-> Continue developing SPIDER-HORSE in this standalone repository. Read README.md and the asset license notices, run the tests and build, then help connect a private GitHub repository and prepare Cloudflare Pages deployment consistent with Neigho Geo. Confirm the intended hosting project/domain before publishing. Preserve the current controls, horse/title pose, minimalist HUD, elastic physics and momentum-aware selection performance.
+### First release, after domain approval
+
+Run tests, syntax checks and build, then deploy the generated directory:
+
+```sh
+npm test
+npm run check
+npm run build
+npx wrangler@4.135.0 pages deploy dist --project-name spider-horse --branch codex/standalone
+```
+
+The upload makes the game public at `https://spider-horse.pages.dev/`. Attach the agreed custom domain through Pages and verify the game before adding its URL to the Neigho Geo registry.
+
+Wrangler needs a valid Cloudflare login or an API token with Pages edit access for the configured account. During setup, the environment API token was rejected, but the existing OAuth login worked after removing `CLOUDFLARE_API_TOKEN` and `CF_API_TOKEN` from that command's environment. No credentials are stored in this repository.
+
+Keep the GitHub repository private and preserve all third-party license notices. Preserve the current controls, horse/title pose, minimalist HUD, elastic physics and momentum-aware selection performance during future changes.
 
 ## Assets
 
