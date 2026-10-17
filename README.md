@@ -33,7 +33,7 @@ Hold Space to attach a web; release to soar. In the air, left/right cycle nearby
 
 Private source repository: https://github.com/maxfarago/spider-horse
 
-The default and Pages production branch is `codex/standalone`. GitHub Actions runs tests, syntax checks and the static build on pushes and pull requests. It does not deploy.
+The default and Pages production branch is `master`. GitHub Actions runs tests, syntax checks and the static build on pushes and pull requests. It does not deploy.
 
 The game is deployed to the Cloudflare Pages project `spider-horse` in the same account as Neigho Geo. Its approved custom domain is https://spider.max.horse; the fallback is https://spider-horse.pages.dev. `wrangler.toml` records its project name and output directory. The Neigho Geo registry has not been changed.
 
@@ -47,7 +47,7 @@ Run tests, syntax checks and build, then deploy the generated directory:
 npm test
 npm run check
 npm run build
-CLOUDFLARE_ACCOUNT_ID=c7698f65669d1881d1f02fd4bcbc250a npx wrangler@4.135.0 pages deploy dist --project-name spider-horse --branch codex/standalone
+CLOUDFLARE_ACCOUNT_ID=c7698f65669d1881d1f02fd4bcbc250a npx wrangler@4.135.0 pages deploy dist --project-name spider-horse --branch master
 ```
 
 The upload updates the public game at https://spider.max.horse and https://spider-horse.pages.dev. Verify the release before updating its listing in the Neigho Geo registry.
