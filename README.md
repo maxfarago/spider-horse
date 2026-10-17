@@ -35,11 +35,11 @@ Private source repository: https://github.com/maxfarago/spider-horse
 
 The default and Pages production branch is `codex/standalone`. GitHub Actions runs tests, syntax checks and the static build on pushes and pull requests. It does not deploy.
 
-An empty Cloudflare Pages project named `spider-horse` has been created in the same account as Neigho Geo. `wrangler.toml` records its account and output directory. No game files have been deployed, no custom domain has been attached, and the Neigho Geo registry has not been changed. Discuss and approve the intended domain before the first deployment; even a preview upload publishes a reachable URL.
+The game is deployed to the Cloudflare Pages project `spider-horse` in the same account as Neigho Geo. Its approved custom domain is https://spider.max.horse; the fallback is https://spider-horse.pages.dev. `wrangler.toml` records its project name and output directory. The Neigho Geo registry has not been changed.
 
 This project uses Direct Upload for deliberate releases. GitHub pushes alone do not publish it. GitHub Actions can be extended to upload releases later; switching to Cloudflare's built-in Git integration requires a new Pages project. See the [Cloudflare Direct Upload guide](https://developers.cloudflare.com/pages/get-started/direct-upload/).
 
-### First release, after domain approval
+### Manual releases
 
 Run tests, syntax checks and build, then deploy the generated directory:
 
@@ -47,10 +47,10 @@ Run tests, syntax checks and build, then deploy the generated directory:
 npm test
 npm run check
 npm run build
-npx wrangler@4.135.0 pages deploy dist --project-name spider-horse --branch codex/standalone
+CLOUDFLARE_ACCOUNT_ID=c7698f65669d1881d1f02fd4bcbc250a npx wrangler@4.135.0 pages deploy dist --project-name spider-horse --branch codex/standalone
 ```
 
-The upload makes the game public at `https://spider-horse.pages.dev/`. Attach the agreed custom domain through Pages and verify the game before adding its URL to the Neigho Geo registry.
+The upload updates the public game at https://spider.max.horse and https://spider-horse.pages.dev. Verify the release before updating its listing in the Neigho Geo registry.
 
 Wrangler needs a valid Cloudflare login or an API token with Pages edit access for the configured account. During setup, the environment API token was rejected, but the existing OAuth login worked after removing `CLOUDFLARE_API_TOKEN` and `CF_API_TOKEN` from that command's environment. No credentials are stored in this repository.
 
