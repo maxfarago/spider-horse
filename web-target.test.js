@@ -41,7 +41,7 @@ test('top indicator clears stale distance when no connection is reachable', () =
 test('top indicator identifies the selected ledge by number even out of frame', () => {
   const { panel, label, distance, classes } = elements();
   updateWebTarget(panel, label, distance, {started:true, anchor:{x:0,y:30,z:40},position:{x:0,y:0,z:0},attached:false,anchorNumber:7});
-  assert.equal(label.textContent, 'Selected ledge 7 · ← →');
+  assert.equal(label.textContent, 'Selected ledge 7 · ↑ ↓');
   assert.equal(distance.textContent, '50 m');
   assert.equal(classes.has('hidden'), false);
 });

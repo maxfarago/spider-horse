@@ -17,9 +17,36 @@ export function bindHold(button, { enabled, press, release }) {
 }
 
 export function rooftopInput(grounded, held) {
-  if (!grounded) return { forward: 0, strafe: 0 };
-  const forward = Number(held('ArrowUp')) - Number(held('ArrowDown'));
-  const strafe = Number(held('ArrowRight')) - Number(held('ArrowLeft'));
-  const scale = Math.max(1, Math.hypot(forward, strafe));
-  return { forward: forward / scale, strafe: strafe / scale };
+  return { forward: grounded ? Number(held('ArrowUp')) - Number(held('ArrowDown')) : 0, strafe: 0 };
+}
+
+export function panView(yaw, held, dt, steering = 0) {
+  const pan = Math.max(-1, Math.min(1, Number(held('ArrowLeft')) - Number(held('ArrowRight')) - steering));
+  const next = yaw + pan * dt * 1.6;
+  return Math.atan2(Math.sin(next), Math.cos(next));
+}
+
+export function attachmentViewYaw(yaw, velocity, wasGrounded) {
+  if (wasGrounded || Math.hypot(velocity.x, velocity.z) < 1) return yaw;
+  return Math.atan2(-velocity.x, -velocity.z);
+}
+
+export function bindJoystick(surface, { enabled, change }) {
+  let pointer = null;
+  const update = event => {
+    const rect = surface.getBoundingClientRect();
+    const value = Math.max(-1, Math.min(1, (event.clientX - rect.left - rect.width / 2) / (rect.width * .35)));
+    change(Math.abs(value) < .12 ? 0 : value);
+  };
+  const clear = () => { if (pointer === null) return; pointer = null; change(0); };
+  surface.addEventListener('pointerdown', event => {
+    if (pointer !== null || event.button !== 0 || !enabled()) return;
+    event.preventDefault(); pointer = event.pointerId; surface.setPointerCapture(pointer); update(event);
+  });
+  surface.addEventListener('pointermove', event => { if (event.pointerId === pointer) { event.preventDefault(); update(event); } });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    surface.addEventListener(type, event => { if (event.pointerId === pointer) clear(); });
+  }
+  surface.addEventListener('contextmenu', event => event.preventDefault());
+  return clear;
 }

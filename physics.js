@@ -4,13 +4,8 @@ const BODY_RADIUS = 1.15;
 const MAX_SPEED = 78;
 const EPSILON = 0.002;
 const HORSE_MASS = 520;
-// A tensile spring (never a rigid pendulum): k/m = 17 s^-2 and damping
-// ratio 0.067 retains a strong, playful rebound while still dissipating energy.
-const SPRING_STIFFNESS = HORSE_MASS * 17;
-const SPRING_DAMPING = HORSE_MASS * 0.55;
 const MAX_TETHER_ACCELERATION = 115;
 const STREET_CLEARANCE = 17;
-const stretchAllowance = (restLength) => clamp(restLength * 0.4, 16, 30);
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const length = (vector) => Math.hypot(vector.x, vector.y, vector.z);
@@ -95,6 +90,8 @@ export class SwingPhysics {
     this.grounded = this.pos.y <= FOOT_CLEARANCE;
     this.anchor = null;
     this.selectedAnchor = null;
+    this.selectedForward = false;
+    this.viewYaw = 0;
     this.recommendedAnchor = null;
     this.recommendationUntil = 0;
     this.previousAnchor = null;
@@ -108,6 +105,14 @@ export class SwingPhysics {
     this.stretchRatio = 0;
     this.attachmentCount = 0;
     this.attachedAt = -Infinity;
+    this.soarUntil = -Infinity;
+    this.catchForwardX = 0; this.catchForwardZ = -1;
+    this.catchLength = 0;
+    this.wallRun = null;
+    this.wallRecoveryUntil = -Infinity;
+    this.vaultUntil = -Infinity;
+    this.releasedAt = -Infinity;
+    this.lastSnap = null;
     this.nextAnchorCheck = 0;
     this.heldAttachmentSpent = false;
     this.energy = 1;
@@ -126,8 +131,8 @@ export class SwingPhysics {
     }).sort((a, b) => Math.hypot(a.x-this.pos.x,a.y-this.pos.y,a.z-this.pos.z) - Math.hypot(b.x-this.pos.x,b.y-this.pos.y,b.z-this.pos.z));
   }
 
-  // Preview the same spring, winch and collision rules used during play. Copies
-  // own all mutable state; evaluating a catch never advances the real horse.
+  // Forecast the first useful release, then check a short stretch of its flight.
+  // Copies own mutable vectors; ranking never advances the real horse.
   evaluateAnchor(anchor, buildings = this.buildings, obstacles = this.ropeObstacles) {
     const preview = Object.assign(Object.create(SwingPhysics.prototype), this, {
       pos: copy(this.pos), vel: copy(this.vel), anchor: null, lastImpact: null,
@@ -138,44 +143,60 @@ export class SwingPhysics {
     const forward = speed > 3 ? { x: this.vel.x / speed, z: this.vel.z / speed }
       : { x: -Math.sin(this.yaw), z: -Math.cos(this.yaw) };
     let clearance = this.pos.y - FOOT_CLEARANCE, impact = 0, blocked = false;
-    let flow = 0, rise = 0;
+    let release = null, interrupted = false, samplesUsed = 0;
     const input = { forward: 0, strafe: 0, turn: 0, reel: 0, boost: false, swingHeld: false };
-    // Ranking needs a coarse forecast, not 240 full gameplay substeps. Swept
-    // collisions still catch thin walls between these 30Hz prediction samples.
-    const samples = 60;
-    for (let i = 0; i < samples && !preview.lost; i++) {
-      preview.integrate(2 / samples, input);
+    const observe = () => {
       clearance = Math.min(clearance, preview.pos.y - FOOT_CLEARANCE);
       impact = Math.max(impact, preview.lastImpact?.speed || 0);
-      flow += (preview.vel.x * forward.x + preview.vel.z * forward.z) / samples;
-      rise = Math.max(rise, preview.vel.y);
-      // A clear initial line is insufficient: the swinging cord may hit a wall.
-      if (i % 3 === 0) {
-        const delta = { x: anchor.x - preview.pos.x, y: anchor.y - preview.pos.y, z: anchor.z - preview.pos.z };
-        blocked ||= obstacles.some(box => sweepBox(preview.pos, delta, box));
+    };
+    // Two seconds at 30 Hz, with at most eight additional flight samples.
+    for (let i = 0; i < 60 && !preview.lost; i++) {
+      preview.integrate(1 / 30, input); samplesUsed++; observe();
+      if (!preview.anchor) { interrupted = true; break; }
+      const delta = { x: anchor.x - preview.pos.x, y: anchor.y - preview.pos.y, z: anchor.z - preview.pos.z };
+      blocked ||= obstacles.some(box => sweepBox(preview.pos, delta, box));
+      if (blocked) break;
+      if (preview.releaseAssist() > 0) {
+        preview.release({ launch: true });
+        const horizontal = Math.hypot(preview.vel.x, preview.vel.z);
+        release = {
+          velocity: copy(preview.vel), position: copy(preview.pos), time: preview.time - this.time,
+          forwardSpeed: preview.vel.x * forward.x + preview.vel.z * forward.z,
+          lateralSpeed: Math.abs(preview.vel.x * forward.z - preview.vel.z * forward.x),
+          pitch: Math.atan2(preview.vel.y, horizontal) * 180 / Math.PI,
+        };
+        // Reject a good-looking launch that immediately runs into a facade.
+        for (let flight = 0; flight < 8 && !preview.lost; flight++) {
+          preview.integrate(1 / 30, input); samplesUsed++; observe();
+        }
+        break;
       }
     }
     const distance = Math.hypot(anchor.x-this.pos.x, anchor.y-this.pos.y, anchor.z-this.pos.z);
-    const score = (preview.lost ? -10000 : 0) - impact * 30 - (blocked ? 1500 : 0)
-      - Math.max(0, 12 - clearance) * 25 + Math.min(clearance, 25) * 2
-      + flow * 3 + Math.min(rise, 30) * .7 - distance * .12;
-    return { anchor, score, clearance, impact, blocked, lost: preview.lost };
+    const launchScore = release
+      ? 200 + release.forwardSpeed * 8 + Math.min(release.velocity.y, 20) * 2
+        - release.lateralSpeed * 3 - Math.abs(release.pitch - 30) * 2 - release.time * 8
+      : -250; // Reachable fallback, but no useful release within this horizon.
+    const score = (preview.lost ? -10000 : 0) - impact * 60 - (blocked ? 1500 : 0)
+      - (interrupted ? 800 : 0) - Math.max(0, 12 - clearance) * 25
+      + Math.min(clearance, 25) * 2 + launchScore - distance * .12;
+    return { anchor, score, clearance, impact, blocked, lost: preview.lost, interrupted, release, samplesUsed };
   }
 
   rankedAnchors() {
     const cache = this.anchorRanking;
-    if (cache && this.time - cache.time < .2 && cache.yaw === this.yaw &&
+    if (cache && this.time - cache.time < .2 && cache.yaw === this.yaw && cache.viewYaw === this.viewYaw &&
       Math.hypot(this.pos.x-cache.pos.x,this.pos.y-cache.pos.y,this.pos.z-cache.pos.z) < 2 &&
       Math.hypot(this.vel.x-cache.vel.x,this.vel.y-cache.vel.y,this.vel.z-cache.vel.z) < 3) return cache.ranked;
-    // Local broad phase bounds all possible two-second travel, including a
-    // stretched cord. Limit previews, reserving candidates on both sides.
+    // Local broad phase bounds the swing and brief release-flight forecast. Limit previews, reserving candidates on both sides.
     const nearby = this.reachableAnchors(75);
-    const ahead = a => (a.x-this.pos.x)*-Math.sin(this.yaw)+(a.z-this.pos.z)*-Math.cos(this.yaw) >= 0;
+    const ahead = a => this.viewAlignment(a) >= Math.cos(50 * Math.PI / 180);
     const pool = [...nearby.filter(ahead).slice(0,12), ...nearby.filter(a => !ahead(a)).slice(0,12)];
     const local = boxes => boxes.filter(b => b.maxX > this.pos.x-240 && b.minX < this.pos.x+240 && b.maxZ > this.pos.z-240 && b.minZ < this.pos.z+240);
     const buildings = local(this.buildings), obstacles = local(this.ropeObstacles);
-    const ranked = pool.map(a => this.evaluateAnchor(a, buildings, obstacles)).sort((a,b) => b.score-a.score).map(result => result.anchor);
-    this.anchorRanking = { time:this.time, pos:copy(this.pos), vel:copy(this.vel), yaw:this.yaw, ranked };
+    const evaluations = pool.map(a => this.evaluateAnchor(a, buildings, obstacles)).sort((a,b) => b.score-a.score);
+    const ranked = evaluations.map(result => result.anchor);
+    this.anchorRanking = { time:this.time, pos:copy(this.pos), vel:copy(this.vel), yaw:this.yaw, viewYaw:this.viewYaw, ranked, evaluations };
     return ranked;
   }
 
@@ -196,25 +217,36 @@ export class SwingPhysics {
     return distance >= 3 && distance <= 75 && !this.ropeObstacles.some(box => sweepBox(this.pos, delta, box));
   }
 
+  viewAlignment(candidate, yaw = this.viewYaw) {
+    const x = candidate.x - this.pos.x, z = candidate.z - this.pos.z;
+    const distance = Math.hypot(x,z);
+    return distance > .01 ? (x * -Math.sin(yaw) + z * -Math.cos(yaw)) / distance : -1;
+  }
+
   isForwardAnchor(candidate) {
     if (!candidate) return false;
     if (this.previousAnchor && candidate.x === this.previousAnchor.x && candidate.y === this.previousAnchor.y && candidate.z === this.previousAnchor.z) return false;
-    const speed = Math.hypot(this.vel.x, this.vel.z);
-    const x = speed > 3 ? this.vel.x / speed : -Math.sin(this.yaw);
-    const z = speed > 3 ? this.vel.z / speed : -Math.cos(this.yaw);
-    return (candidate.x - this.pos.x) * x + (candidate.z - this.pos.z) * z > .01;
+    return this.viewAlignment(candidate) >= Math.cos(50 * Math.PI / 180);
+  }
+
+  forwardCandidates() {
+    const ranked = this.rankedAnchors();
+    const score = (a) => (this.anchorRanking?.evaluations?.find(result => result.anchor === a)?.score ?? -ranked.indexOf(a))
+      - 500 * (1 - this.viewAlignment(a));
+    return ranked.filter(a => this.isForwardAnchor(a) && this.isReachableAnchor(a)).sort((a,b) => score(b)-score(a));
   }
 
   findAnchor() {
-    if (this.selectedAnchor && this.isReachableAnchor(this.selectedAnchor)) return this.selectedAnchor;
+    if (this.selectedAnchor && this.isReachableAnchor(this.selectedAnchor) && (!this.selectedForward || this.isForwardAnchor(this.selectedAnchor))) return this.selectedAnchor;
     this.selectedAnchor = null;
     if (this.time < this.recommendationUntil && this.isReachableAnchor(this.recommendedAnchor) && this.isForwardAnchor(this.recommendedAnchor)) return this.recommendedAnchor;
-    this.recommendedAnchor = this.rankedAnchors().find(a => this.isForwardAnchor(a) && this.isReachableAnchor(a)) || null;
+    this.recommendedAnchor = this.forwardCandidates()[0] || null;
     this.recommendationUntil = this.time + .45;
     return this.recommendedAnchor;
   }
 
   selectAnchor(direction) {
+    this.selectedForward = false;
     this.anchorRanking = null;
     const candidates = this.selectableAnchors();
     if (!candidates.length) { this.selectedAnchor = null; return null; }
@@ -226,6 +258,8 @@ export class SwingPhysics {
   }
 
   selectDirectionalAnchor(yaw, direction) {
+    this.viewYaw = yaw;
+    this.selectedForward = false;
     this.anchorRanking = null;
     const forwardX = -Math.sin(yaw), forwardZ = -Math.cos(yaw);
     const candidate = this.rankedAnchors().find(a =>
@@ -235,6 +269,19 @@ export class SwingPhysics {
     return candidate;
   }
 
+  selectNextForwardAnchor(yaw, current = null) {
+    this.viewYaw = yaw;
+    this.selectedForward = true;
+    const candidates = this.forwardCandidates();
+    if (!candidates.length) {
+      this.selectedAnchor = null; this.recommendedAnchor = null; this.recommendationUntil = 0;
+      return null;
+    }
+    const index = candidates.findIndex(a => current && a.x === current.x && a.y === current.y && a.z === current.z);
+    this.selectedAnchor = candidates[(index + 1) % candidates.length];
+    return this.selectedAnchor;
+  }
+
   attach(candidate = undefined) {
     if (this.lost) return false;
     if (this.anchor) return true;
@@ -242,7 +289,7 @@ export class SwingPhysics {
     // it at keydown if movement has made it invalid.
     if (candidate === undefined) candidate = this.findAnchor();
     if (!this.isReachableAnchor(candidate)) return false;
-    if (candidate !== this.selectedAnchor && !this.isForwardAnchor(candidate)) return false;
+    if ((candidate !== this.selectedAnchor || this.selectedForward) && !this.isForwardAnchor(candidate)) return false;
     this.connect(candidate);
     return true;
   }
@@ -254,9 +301,16 @@ export class SwingPhysics {
     const distance = Math.hypot(this.pos.x - candidate.x, this.pos.y - candidate.y, this.pos.z - candidate.z);
     // The initial preload catches falling momentum progressively. Connection
     // never replaces airborne velocity or teleports the horse onto a sphere.
-    this.ropeLength = Math.max(12, distance - 2.8);
-    this.launchReelTarget = Math.max(12, Math.min(this.ropeLength, candidate.y - STREET_CLEARANCE - stretchAllowance(this.ropeLength)));
-    this.maxRopeLength = this.ropeLength + stretchAllowance(this.ropeLength);
+    this.ropeLength = Math.max(12, distance);
+    this.launchReelTarget = Math.max(12, Math.min(this.ropeLength, candidate.y - STREET_CLEARANCE));
+    this.maxRopeLength = this.ropeLength + 1.2;
+    this.soarUntil = -Infinity;
+    this.releasedAt = -Infinity;
+    this.wallRun = null; this.vaultUntil = -Infinity;
+    this.catchLength = this.ropeLength;
+    const horizontalSpeed = Math.hypot(this.vel.x, this.vel.z);
+    this.catchForwardX = horizontalSpeed > 1 ? this.vel.x / horizontalSpeed : -Math.sin(this.yaw);
+    this.catchForwardZ = horizontalSpeed > 1 ? this.vel.z / horizontalSpeed : -Math.cos(this.yaw);
     this.attachedAt = this.time;
     this.attachmentCount += 1;
     this.nextAnchorCheck = this.time + 0.45;
@@ -271,30 +325,37 @@ export class SwingPhysics {
     this.updateTetherState();
   }
 
+  releaseAssist() {
+    // Reward the ascending arc, not the height apex where upward speed is gone.
+    if (!this.anchor || this.vel.y < 3 || this.time - this.attachedAt < .2) return 0;
+    const state = this.updateTetherState();
+    const angle = Math.atan2(Math.hypot(state.radial.x, state.radial.z), -state.radial.y);
+    const forward = this.vel.x * this.catchForwardX + this.vel.z * this.catchForwardZ;
+    if (state.distance < this.ropeLength - .3 || angle < .35 || angle > .7 || forward < 8) return 0;
+    return 3;
+  }
+
+  swingTelemetry() {
+    const ready = !!this.anchor && !this.lost && !this.grounded && this.time - this.attachedAt >= .12 && this.releaseAssist() > 0;
+    const angle = this.anchor ? Math.atan2(Math.hypot(this.pos.x - this.anchor.x, this.pos.z - this.anchor.z), this.anchor.y - this.pos.y) * 180 / Math.PI : null;
+    const phase = !this.anchor ? (this.time < this.soarUntil ? 'Soaring' : 'Detached') : ready ? 'Release now · SNAP' : this.vel.y > 1 ? 'Rising' : this.vel.y < -1 ? 'Descending' : 'Turning';
+    return { ready, angle, phase, speed: length(this.vel), verticalSpeed: this.vel.y, lastSnap: this.lastSnap };
+  }
+
   release({ launch = false } = {}) {
+    if (!launch) { this.soarUntil = -Infinity; this.releasedAt = -Infinity; }
     if (launch && this.anchor && !this.lost && !this.grounded && this.time - this.attachedAt >= .12) {
-      const state = this.updateTetherState();
-      // Assist in the actual swing tangent. Existing velocity (including the
-      // elastic recoil) survives release; timing determines the launch angle.
-      if (state.distance > 1e-6 && state.distance >= this.ropeLength - .05) {
-        const radialSpeed = dot(this.vel, state.radial) / state.distance;
-        const tangent = {
-          x: this.vel.x - state.radial.x / state.distance * radialSpeed,
-          y: this.vel.y - state.radial.y / state.distance * radialSpeed,
-          z: this.vel.z - state.radial.z / state.distance * radialSpeed,
-        };
-        const speed = length(tangent);
-        if (speed > 1) {
-          // Stored extension adds a little snap, without a hold-time charge or
-          // a minimum upward velocity that makes every release the same jump.
-          const loaded = Math.max(0, this.stretch - 2.8);
-          const recoil = Math.min(4, Math.sqrt(SPRING_STIFFNESS / HORSE_MASS) * loaded * .2);
-          const assist = Math.min(10, speed * .18 + recoil);
-          this.vel.x += tangent.x / speed * assist;
-          this.vel.y += tangent.y / speed * assist;
-          this.vel.z += tangent.z / speed * assist;
-          this.limitSpeed();
-        }
+      this.releasedAt = this.time;
+      const snap = this.releaseAssist();
+      const speedBefore = length(this.vel);
+      if (snap > 0) {
+        // Small assist along the existing trajectory; no fabricated upward floor.
+        const speed = length(this.vel);
+        const scale = (speed + snap) / Math.max(speed, 1);
+        this.vel.x *= scale; this.vel.y *= scale; this.vel.z *= scale;
+        this.limitSpeed();
+        this.soarUntil = this.time + .65;
+        this.lastSnap = { time: this.time, before: speedBefore, after: length(this.vel), gain: length(this.vel) - speedBefore };
       }
     }
     const wasAttached = this.anchor !== null;
@@ -315,7 +376,7 @@ export class SwingPhysics {
   maintainHeldSwing(candidate = undefined) {
     // Retry only the initial catch. A held cord never transfers to a new roof,
     // including after a collision breaks it; the player must release first.
-    if (this.anchor || this.heldAttachmentSpent || this.time < this.nextAnchorCheck) return;
+    if (this.wallRun || this.time < this.vaultUntil || this.anchor || this.heldAttachmentSpent || this.time < this.nextAnchorCheck) return;
     this.nextAnchorCheck = this.time + 0.12;
     this.attach(candidate);
   }
@@ -328,11 +389,12 @@ export class SwingPhysics {
       z: this.pos.z - this.anchor.z,
     };
     const distance = length(radial);
-    this.maxRopeLength = this.ropeLength + stretchAllowance(this.ropeLength);
+    const compliance = Math.max(0, 1 - (this.time - this.attachedAt) / .18);
+    this.maxRopeLength = this.ropeLength + 1.2 * compliance;
     this.stretch = Math.max(0, distance - this.ropeLength);
-    this.stretchRatio = clamp(this.stretch / stretchAllowance(this.ropeLength), 0, 1);
-    const outwardSpeed = distance > 1e-6 ? dot(this.vel, radial) / distance : 0;
-    this.tensionForce = this.stretch > 0 ? clamp(SPRING_STIFFNESS * this.stretch + SPRING_DAMPING * outwardSpeed, 0, HORSE_MASS * MAX_TETHER_ACCELERATION) : 0;
+    this.stretchRatio = clamp(this.stretch / 1.2, 0, 1);
+    // Load is a presentation estimate, not a competing spring force.
+    this.tensionForce = distance >= this.ropeLength - .1 ? HORSE_MASS * Math.min(MAX_TETHER_ACCELERATION, length(this.vel) ** 2 / Math.max(distance, 1) + GRAVITY * Math.max(0, -radial.y / Math.max(distance, 1))) : 0;
     this.tension = this.tensionForce / (HORSE_MASS * MAX_TETHER_ACCELERATION);
     return { radial, distance };
   }
@@ -340,35 +402,27 @@ export class SwingPhysics {
   applyTether(dt, reel) {
     if (!this.anchor) return;
     this.ropeLength = clamp(this.ropeLength - reel * dt * 15, 12, 145);
-    // A bounded winch gradually moves the lowest possible arc above traffic.
-    // It does work through the spring, so stretching and recoil stay visible.
-    if (reel >= 0) {
-      const radial = { x: this.pos.x - this.anchor.x, y: this.pos.y - this.anchor.y, z: this.pos.z - this.anchor.z };
-      const distance = length(radial);
-      const radialSpeed = distance > 1e-6 ? dot(this.vel, radial) / distance : 0;
-      const upwardFraction = distance > 1e-6 ? -radial.y / distance : 0;
-      let target = this.launchReelTarget;
-      let rate = 10;
-      if (this.pos.y < 34 && this.vel.y < 5 && upwardFraction > 0.2) {
-        // Feed the measured inward speed into the motor, otherwise approaching
-        // a roof makes slack faster than a constant-speed winch can remove it.
-        // Braking distance determines extra spring load before street contact.
-        const stoppingRoom = Math.max(3, this.pos.y - 13);
-        const braking = Math.max(0, -this.vel.y) ** 2 / (2 * stoppingRoom) + 12;
-        const neededPull = Math.min(MAX_TETHER_ACCELERATION, (GRAVITY + braking) / upwardFraction);
-        const extension = clamp((neededPull - (SPRING_DAMPING / HORSE_MASS) * radialSpeed) / (SPRING_STIFFNESS / HORSE_MASS), 2.8, 12);
-        target = Math.max(12, Math.min(target ?? this.ropeLength, distance - extension));
-        rate = clamp(-radialSpeed + 24, 20, 65);
-      }
-      if (target !== null && this.ropeLength > target) this.ropeLength = Math.max(target, this.ropeLength - dt * rate);
-      if (this.launchReelTarget !== null && this.ropeLength <= this.launchReelTarget) this.launchReelTarget = null;
+    // One bounded target-length controller, including street clearance.
+    if (reel >= 0 && this.launchReelTarget !== null) {
+      this.ropeLength = Math.max(this.launchReelTarget, this.ropeLength - dt * 14);
+      if (this.ropeLength <= this.launchReelTarget) this.launchReelTarget = null;
     }
     const state = this.updateTetherState();
     if (!state || state.distance < 1e-6) return;
-    const pull = this.tensionForce / HORSE_MASS * dt / state.distance;
-    this.vel.x -= state.radial.x * pull;
-    this.vel.y -= state.radial.y * pull;
-    this.vel.z -= state.radial.z * pull;
+    const below = -state.radial.y / state.distance;
+    // Assist only within 25 degrees of the bottom and only while taut.
+    if (below > Math.cos(25 * Math.PI / 180) && state.distance >= this.ropeLength - .1 && this.time - this.attachedAt >= .18) {
+      const radialForward = (this.catchForwardX * state.radial.x + this.catchForwardZ * state.radial.z) / state.distance ** 2;
+      const tangent = { x: this.catchForwardX - state.radial.x * radialForward, y: -state.radial.y * radialForward, z: this.catchForwardZ - state.radial.z * radialForward };
+      const magnitude = length(tangent);
+      if (magnitude > .2) {
+        const along = dot(this.vel, tangent) / magnitude;
+        const assist = along >= 0 ? Math.min(10 * dt, Math.max(0, 24 - along)) : 0;
+        this.vel.x += tangent.x / magnitude * assist;
+        this.vel.y += tangent.y / magnitude * assist;
+        this.vel.z += tangent.z / magnitude * assist;
+      }
+    }
   }
 
   jump() {
@@ -430,7 +484,35 @@ export class SwingPhysics {
     const acceleration = this.grounded ? 39 : this.anchor ? 13 : 10;
     this.vel.x += (-sin * input.forward + cos * input.strafe) * acceleration * dt;
     this.vel.z += (-cos * input.forward - sin * input.strafe) * acceleration * dt;
-    this.vel.y -= GRAVITY * dt;
+    const soaring = !this.anchor && !this.grounded && this.time < this.soarUntil;
+    this.vel.y -= GRAVITY * (soaring ? .85 : 1) * dt;
+    if (!this.grounded && input.turn) {
+      // Rotate momentum rather than adding speed; steering works in swing and air.
+      const angle = input.turn * dt * (this.anchor ? .85 : 1.15);
+      const x = this.vel.x, z = this.vel.z;
+      if (this.anchor) {
+        const state = this.updateTetherState();
+        const n = { x: state.radial.x / state.distance, y: state.radial.y / state.distance, z: state.radial.z / state.distance };
+        const radialSpeed = dot(this.vel, n);
+        const tangent = { x: x - n.x * radialSpeed, y: this.vel.y - n.y * radialSpeed, z: z - n.z * radialSpeed };
+        const speed = length(tangent);
+        const lateral = { x: tangent.z, y: 0, z: -tangent.x };
+        const outward = dot(lateral, n);
+        tangent.x += (lateral.x - n.x * outward) * angle;
+        tangent.y -= n.y * outward * angle;
+        tangent.z += (lateral.z - n.z * outward) * angle;
+        const scale = speed / Math.max(length(tangent), 1e-9);
+        this.vel = { x: tangent.x * scale + n.x * radialSpeed, y: tangent.y * scale + n.y * radialSpeed, z: tangent.z * scale + n.z * radialSpeed };
+      } else {
+        this.vel.x = x * Math.cos(angle) + z * Math.sin(angle);
+        this.vel.z = z * Math.cos(angle) - x * Math.sin(angle);
+      }
+      const fx = this.catchForwardX, fz = this.catchForwardZ;
+      this.catchForwardX = fx * Math.cos(angle) + fz * Math.sin(angle);
+      this.catchForwardZ = fz * Math.cos(angle) - fx * Math.sin(angle);
+      this.anchorRanking = null;
+      this.recommendationUntil = 0;
+    }
 
     if (input.boost && this.energy > 0) {
       const poweredTime = Math.min(dt, this.energy / 0.28);
@@ -441,22 +523,24 @@ export class SwingPhysics {
     } else if (!input.boost) {
       this.energy = Math.min(1, this.energy + dt * (this.grounded ? 0.23 : 0.13));
     }
-    const drag = Math.exp(-dt * (this.grounded ? 1.65 : this.anchor ? 0.035 : 0.085));
+    const drag = Math.exp(-dt * (this.grounded ? 1.65 : this.anchor ? 0.035 : soaring ? .015 : 0.085));
     this.vel.x *= drag;
     this.vel.z *= drag;
+    this.updateWallRun();
     this.applyTether(dt, input.reel);
     this.limitSpeed();
 
     const before = copy(this.pos);
     this.grounded = false;
     this.resolveOverlap();
-    this.move({ x: this.vel.x * dt, y: this.vel.y * dt, z: this.vel.z * dt });
+    this.move({ x: this.vel.x * dt, y: this.vel.y * dt, z: this.vel.z * dt }, true);
     // Street contact is terminal before a taut rope can pull us back up.
     if (this.fatalGround) { this.resolveGround(); if (this.lost) return; }
     this.constrainRope();
     this.resolveGround();
     this.enforceBounds();
     this.updateTetherState();
+    if (this.grounded) { this.soarUntil = -Infinity; this.wallRun = null; this.vaultUntil = -Infinity; }
     this.distanceTravelled += Math.hypot(this.pos.x - before.x, this.pos.z - before.z);
   }
 
@@ -472,10 +556,46 @@ export class SwingPhysics {
 
   recordImpact(normal, kind = 'building') {
     const speed = Math.max(0, -dot(this.vel, normal));
+    if (speed > 4) this.soarUntil = -Infinity;
     if (speed > 4) this.lastImpact = { time: this.time, speed, normal: copy(normal), kind };
   }
 
-  move(displacement) {
+  beginWallRun(box, normal) {
+    const incoming = Math.hypot(this.vel.x, this.vel.z);
+    if (this.wallRun || this.grounded || this.lost || this.time < this.wallRecoveryUntil ||
+        Math.abs(normal.y) > .1 || this.pos.y < FOOT_CLEARANCE + 2 || incoming < 8 || -dot(this.vel, normal) < 4) return;
+    this.release();
+    this.heldAttachmentSpent = true;
+    this.wallRun = { box, normal: copy(normal), until: this.time + 1.15, speed: incoming, climb: clamp(incoming * .7, 14, 28) };
+    this.wallRecoveryUntil = this.time + 2.4;
+    this.vel.y = Math.max(this.vel.y, this.wallRun.climb);
+  }
+
+  updateWallRun() {
+    const wall = this.wallRun;
+    if (!wall) return;
+    const {box, normal} = wall;
+    const gap = normal.x ? Math.abs(this.pos.x - (normal.x < 0 ? box.minX : box.maxX)) : Math.abs(this.pos.z - (normal.z < 0 ? box.minZ : box.maxZ));
+    const beside = normal.x ? this.pos.z >= box.minZ && this.pos.z <= box.maxZ : this.pos.x >= box.minX && this.pos.x <= box.maxX;
+    if (this.lost || this.grounded || this.time > wall.until || gap > 2 || !beside) { this.wallRun = null; return; }
+    if (this.pos.y > box.maxY + .15) {
+      // Clearance is earned by climbing: sweep the vault normally, never teleport.
+      const into = dot(this.vel, normal);
+      const forward = clamp(wall.speed * .8, 14, 32);
+      this.vel.x -= normal.x * (into + forward);
+      this.vel.z -= normal.z * (into + forward);
+      this.vel.y = Math.max(7, Math.min(this.vel.y, 12));
+      this.wallRun = null;
+      this.vaultUntil = this.time + .45;
+      return;
+    }
+    this.vel.y = Math.max(this.vel.y, wall.climb);
+    const into = dot(this.vel, normal);
+    this.vel.x -= normal.x * (into + 2);
+    this.vel.z -= normal.z * (into + 2);
+  }
+
+  move(displacement, recover = false) {
     let delta = { ...displacement };
     let collided = false;
     for (let pass = 0; pass < 3; pass += 1) {
@@ -483,7 +603,7 @@ export class SwingPhysics {
       let nearest = null;
       for (const building of this.buildings) {
         const hit = sweepBox(this.pos, delta, building);
-        if (hit && (!nearest || hit.fraction < nearest.fraction)) nearest = hit;
+        if (hit && (!nearest || hit.fraction < nearest.fraction)) nearest = { ...hit, box: building };
       }
       if (!nearest) {
         this.pos.x += delta.x;
@@ -497,6 +617,7 @@ export class SwingPhysics {
       this.pos.y += delta.y * fraction + normal.y * EPSILON;
       this.pos.z += delta.z * fraction + normal.z * EPSILON;
       this.recordImpact(normal);
+      if (recover) this.beginWallRun(nearest.box, normal);
       const intoWall = dot(this.vel, normal);
       if (intoWall < 0) {
         this.vel.x -= normal.x * intoWall;
@@ -547,8 +668,8 @@ export class SwingPhysics {
       z: this.pos.z - this.anchor.z,
     };
     const distance = length(radial);
-    // Emergency stretch stop only. Ordinary motion is governed by the spring
-    // above, which allows metres of extension instead of erasing radial speed.
+    // Catch compliance tapers into a firm pendulum limit. Remove outward
+    // radial motion at that limit while retaining tangential momentum.
     if (distance <= this.maxRopeLength || distance < 1e-6) return;
     radial.x /= distance;
     radial.y /= distance;
@@ -615,6 +736,7 @@ export class SwingPhysics {
       pos: copy(this.pos),
       vel: copy(this.vel),
       yaw: this.yaw,
+      traversalPhase: this.grounded ? 'grounded' : this.wallRun ? 'wall-run' : this.time < this.vaultUntil ? 'vault' : this.anchor ? (this.time - this.attachedAt < .18 ? 'catch' : 'swing') : this.time < this.soarUntil ? 'soar' : 'air',
       grounded: this.grounded,
       lost: this.lost,
       anchor: this.anchor ? { ...this.anchor } : null,
