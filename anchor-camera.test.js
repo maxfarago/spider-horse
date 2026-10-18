@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PerspectiveCamera, Vector3 } from './vendor/three.module.js';
-import { cameraClearance, chooseAnchorView, frameAnchor, turnTowardAnchor, revealAnchor } from './anchor-camera.js';
+import { flightCameraFrame, cameraClearance, chooseAnchorView, frameAnchor, turnTowardAnchor, revealAnchor } from './anchor-camera.js';
 
 test('selected anchors and horse fit the camera, including behind and portrait views', () => {
   for (const aspect of [390 / 844, 1, 16 / 9]) {
@@ -99,4 +99,35 @@ test('reveal transition stays in front of a facade even when no view clears it',
     assert.equal(cameraClearance(horse, camera.position, buildings, .8), 1);
     assert.ok(Number.isFinite(camera.position.length()));
   }
+});
+
+
+test('flight camera permits bounded rise/fall and resets on teleport or reduced motion', () => {
+  const position={x:0,y:100,z:0},velocity={x:0,y:30,z:-40};
+  const rise=flightCameraFrame(98,position,velocity,1/60);
+  assert.ok(rise.trackedY>98 && rise.trackedY<100);
+  const fall=flightCameraFrame(105,position,{...velocity,y:-30},1/60);
+  assert.ok(fall.trackedY>100 && fall.trackedY<=102.2);
+  const close=flightCameraFrame(95,position,velocity,1/60,{distance:6});
+  assert.ok(close.trackedY>=98.68);
+  assert.equal(flightCameraFrame(0,position,velocity,1/60).trackedY,100);
+  assert.deepEqual(flightCameraFrame(98,position,velocity,1/60,{active:false}),{trackedY:100,ahead:{x:0,y:0,z:0}});
+});
+
+test('flight look-ahead anticipates rise, crest, dive and curved rope motion without mutating physics', () => {
+  const position={x:0,y:100,z:0},velocity={x:0,y:20,z:-40};
+  const before=JSON.stringify({position,velocity});
+  const up=flightCameraFrame(100,position,velocity,1/60);
+  const crest=flightCameraFrame(100,position,{...velocity,y:0},1/60);
+  const down=flightCameraFrame(100,position,{...velocity,y:-60},1/60);
+  assert.ok(up.ahead.y>0 && crest.ahead.y<0 && down.ahead.y<crest.ahead.y);
+  assert.ok(down.ahead.y>=-3);assert.equal(up.ahead.z,-6);
+  const swing=flightCameraFrame(100,position,{...velocity,y:0},1/60,{anchor:{x:0,y:130,z:0}});
+  assert.ok(swing.ahead.y>crest.ahead.y,'a loaded bottom arc curves upward');
+  assert.equal(JSON.stringify({position,velocity}),before);
+});
+
+test('vertical follow converges consistently across render rates', () => {
+  const run=fps=>{let y=98;for(let i=0;i<fps;i++)y=flightCameraFrame(y,{x:0,y:100,z:0},{x:0,y:0,z:0},1/fps).trackedY;return y;};
+  assert.ok(Math.abs(run(30)-run(120))<1e-9);
 });

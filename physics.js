@@ -108,6 +108,7 @@ export class SwingPhysics {
     this.soarUntil = -Infinity;
     this.catchForwardX = 0; this.catchForwardZ = -1;
     this.catchLength = 0;
+    this.swingPeakForward = 0;
     this.swingRearmAt = Infinity;
     this.pointZip = null;
     this.pointLaunchUntil = -Infinity;
@@ -319,6 +320,7 @@ export class SwingPhysics {
     const horizontalSpeed = Math.hypot(this.vel.x, this.vel.z);
     this.catchForwardX = horizontalSpeed > 1 ? this.vel.x / horizontalSpeed : -Math.sin(this.yaw);
     this.catchForwardZ = horizontalSpeed > 1 ? this.vel.z / horizontalSpeed : -Math.cos(this.yaw);
+    this.swingPeakForward = horizontalSpeed;
     this.attachedAt = this.time;
     this.attachmentCount += 1;
     this.nextAnchorCheck = this.time + 0.45;
@@ -396,11 +398,34 @@ export class SwingPhysics {
 
   maintainHeldSwing(candidate = undefined) {
     if (this.time >= this.swingRearmAt) { this.heldAttachmentSpent = false; this.swingRearmAt = Infinity; }
-    // Retry only the initial catch. A held cord never transfers to a new roof,
-    // including after a collision breaks it; the player must release first.
+    if (this.anchor && !this.grounded && !this.lost) {
+      const forward = this.vel.x * this.catchForwardX + this.vel.z * this.catchForwardZ;
+      this.swingPeakForward = Math.max(this.swingPeakForward, forward);
+      const state = this.updateTetherState();
+      const angle = Math.atan2(Math.hypot(state.radial.x, state.radial.z), -state.radial.y);
+      // Finish the useful ascending arc before forward progress collapses.
+      // Never force a release during the catch, initial dive, or slack flight.
+      if (this.time - this.attachedAt > .45 && this.vel.y > 2 &&
+          state.distance >= this.ropeLength - .3 && angle > Math.PI / 5 &&
+          this.swingPeakForward > 12 && forward < this.swingPeakForward * .78) {
+        this.release({intentional:true});
+        this.swingRearmAt = this.time + .7;
+        this.heldAttachmentSpent = true;
+      }
+      return;
+    }
+    // Only intentional swing exits rearm; collision breaks still require a new press.
     if (this.pointZip || this.wallRun || this.time < this.vaultUntil || this.anchor || this.heldAttachmentSpent || this.time < this.nextAnchorCheck) return;
     this.nextAnchorCheck = this.time + 0.12;
     this.attach(candidate);
+  }
+
+  soarWeight() {
+    if (this.anchor || this.grounded || this.lost) return 0;
+    const remaining = clamp((this.soarUntil - this.time) / .45, 0, 1);
+    const descent = clamp((this.vel.y + 8) / 8, 0, 1);
+    const smooth = x => x * x * (3 - 2 * x);
+    return smooth(remaining) * smooth(descent);
   }
 
   updateTetherState() {
@@ -619,14 +644,14 @@ export class SwingPhysics {
       }
     }
     if (input.swingHeld) this.maintainHeldSwing(input.swingTarget);
-    else this.heldAttachmentSpent = false;
+    else { this.heldAttachmentSpent = false; this.swingRearmAt = Infinity; }
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
     const acceleration = this.grounded ? 39 : this.anchor ? 13 : 10;
     this.vel.x += (-sin * input.forward + cos * input.strafe) * acceleration * dt;
     this.vel.z += (-cos * input.forward - sin * input.strafe) * acceleration * dt;
-    const soaring = !this.anchor && !this.grounded && this.time < this.soarUntil;
-    this.vel.y -= GRAVITY * (soaring ? .85 : 1) * dt;
+    const soarWeight = this.soarWeight();
+    this.vel.y -= GRAVITY * (1 - .15 * soarWeight) * dt;
     if (!this.grounded && input.turn) {
       // Rotate momentum rather than adding speed; steering works in swing and air.
       const angle = input.turn * dt * (this.anchor ? .85 : 1.15);
@@ -664,7 +689,7 @@ export class SwingPhysics {
     } else if (!input.boost) {
       this.energy = Math.min(1, this.energy + dt * (this.grounded ? 0.23 : 0.13));
     }
-    const drag = Math.exp(-dt * (this.grounded ? 1.65 : this.anchor ? 0.035 : soaring ? .015 : 0.085));
+    const drag = Math.exp(-dt * (this.grounded ? 1.65 : this.anchor ? 0.035 : (.06 - .045 * soarWeight)));
     this.vel.x *= drag;
     this.vel.z *= drag;
     this.updateWallRun();

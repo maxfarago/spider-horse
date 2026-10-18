@@ -3,7 +3,7 @@ import { createCity } from './city.js';
 import { createHorse } from './horse.js';
 import { createWeb } from './web.js';
 import { updateWebTarget } from './web-target.js';
-import { cameraClearance, revealAnchor, turnTowardAnchor } from './anchor-camera.js';
+import { cameraClearance, revealAnchor, turnTowardAnchor, flightCameraFrame } from './anchor-camera.js';
 import { bindHold, bindJoystick, bindLook, travelIntent, panView } from './controls.js';
 import { traversalFeel } from './traversal-feel.js';
 import { SwingPhysics } from './physics.js';
@@ -389,12 +389,20 @@ function updateHorse(dt, input) {
 }
 function updateCamera(dt) {
   const feel = started ? traversalFeel(physics, preferences.reduceMotion) : {distance:0,height:0,fov:0,lookAhead:0};
-  // Follow translation immediately; ease only the framing change, not the horse's motion.
+  const flightFrame = started ? flightCameraFrame(cameraTrackedHorse.y, horsePosition, physics.vel, dt, {
+    active: !preferences.reduceMotion && !physics.grounded && !physics.wallRun && !frameSelectedAnchor,
+    distance: preferences.camera === 'close' ? 6 : preferences.camera === 'wide' ? 19 : 8.5,
+    anchor: physics.anchor,
+    gravity: 25 * (1 - .15 * physics.soarWeight()),
+  }) : null;
+  // Horizontal tracking stays immediate; vertical tracking has a bounded lag.
   if (started) {
     cameraTravel.copy(horsePosition).sub(cameraTrackedHorse);
+    cameraTravel.y = flightFrame.trackedY - cameraTrackedHorse.y;
     camera.position.add(cameraTravel); cameraTarget.add(cameraTravel);
   }
   cameraTrackedHorse.copy(horsePosition);
+  if (flightFrame) cameraTrackedHorse.y = flightFrame.trackedY;
   if (started && frameSelectedAnchor) {
     const candidate = physics.findAnchor();
     if (candidate !== facingAnchor) startPivotReveal();
@@ -414,14 +422,15 @@ function updateCamera(dt) {
     const baseDistance = preferences.camera === 'wide' ? 19 : preferences.camera === 'close' ? 6 : 8.5;
     const distance = baseDistance + (preferences.reduceMotion ? 0 : Math.min(speed * .035, 2)) + feel.distance;
     const yaw = viewYaw + orbit;
-    desiredCamera.set(horsePosition.x + Math.sin(yaw) * distance, horsePosition.y + 3 + pitch * distance + feel.height, horsePosition.z + Math.cos(yaw) * distance);
+    desiredCamera.set(horsePosition.x + Math.sin(yaw) * distance, cameraTrackedHorse.y + 3 + pitch * distance + feel.height, horsePosition.z + Math.cos(yaw) * distance);
     desiredTarget.set(horsePosition.x - Math.sin(viewYaw) * 7, horsePosition.y + .8, horsePosition.z - Math.cos(viewYaw) * 7);
     // Look slightly into travel without overriding a manually panned view.
     if (!frameSelectedAnchor && Math.abs(orbit) < .1 && speed > 1) {
       const alignment = (-Math.sin(viewYaw) * physics.vel.x - Math.cos(viewYaw) * physics.vel.z) / speed;
-      const ahead = feel.lookAhead * Math.max(0, alignment);
-      desiredTarget.x += physics.vel.x / speed * ahead;
-      desiredTarget.z += physics.vel.z / speed * ahead;
+      const weight = Math.max(0, alignment) * (1 - Math.min(1, Math.abs(pitch - .1) * 3));
+      desiredTarget.x += flightFrame.ahead.x * weight;
+      desiredTarget.y += flightFrame.ahead.y * weight;
+      desiredTarget.z += flightFrame.ahead.z * weight;
     }
     // Keep the player's chosen view until the run resets.
     desiredTarget.lerp(horsePosition, Math.min(1, Math.abs(orbit) * 1.5 + Math.abs(pitch - .1)));
@@ -442,6 +451,17 @@ function updateCamera(dt) {
   } else {
     camera.position.lerp(desiredCamera, 1 - Math.exp(-dt * (started ? 3.5 : 2.8)));
     cameraTarget.lerp(desiredTarget, 1 - Math.exp(-dt * (started ? 3.5 : 7)));
+  }
+  // Lagged/smoothed positions must be safe too, not just the desired endpoint.
+  if (started && !framedAnchor) {
+    const delta = camera.position.clone().sub(horsePosition);
+    for (let step = 1; step <= 20; step++) {
+      const point = horsePosition.clone().addScaledVector(delta, step / 20);
+      if (city.buildings.some(b => point.y < b.height + 1 && point.x > b.minX - 1 && point.x < b.maxX + 1 && point.z > b.minZ - 1 && point.z < b.maxZ + 1)) {
+        camera.position.copy(horsePosition).addScaledVector(delta, (step - 1) / 20); break;
+      }
+    }
+    camera.position.y = Math.max(camera.position.y, 2.7);
   }
   camera.lookAt(cameraTarget); camera.updateMatrixWorld(true);
   if (renderFrames % 8 === 0) { sun.position.set(horsePosition.x - 150, horsePosition.y + 105, horsePosition.z + 85); sun.target.position.copy(horsePosition); }
