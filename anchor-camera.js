@@ -103,3 +103,34 @@ export function chooseAnchorView(horse, anchor, yaw, fov, aspect, buildings, sta
   }
   Object.assign(state, chosen);
 }
+
+// Follow horizontal travel immediately, but allow bounded vertical screen motion.
+export function flightCameraFrame(previousY, position, velocity, dt, { active = true, distance = 10, anchor = null, gravity = 25 } = {}) {
+  const limit = Math.min(2.5, distance * .22);
+  const reset = !Number.isFinite(previousY) || Math.abs(position.y - previousY) > 20;
+  const trackedY = !active || reset ? position.y : MathUtils.clamp(
+    MathUtils.lerp(previousY, position.y, 1 - Math.exp(-Math.max(0, dt) * 4)),
+    position.y - limit, position.y + limit,
+  );
+  if (!active) return { trackedY, ahead: { x: 0, y: 0, z: 0 } };
+  const horizon = .35;
+  let ax = 0, ay = -gravity, az = 0;
+  if (anchor) {
+    const radial = new Vector3().subVectors(position, anchor);
+    const radius = radial.length();
+    if (radius > 1) {
+      radial.divideScalar(radius);
+      const radialSpeed = velocity.x * radial.x + velocity.y * radial.y + velocity.z * radial.z;
+      const tangentSpeedSq = Math.max(0, velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2 - radialSpeed ** 2);
+      const inward = Math.max(0, tangentSpeedSq / radius - gravity * radial.y);
+      ax -= radial.x * inward; ay -= radial.y * inward; az -= radial.z * inward;
+    }
+  }
+  const ahead = new Vector3(velocity.x * horizon + ax * horizon ** 2 / 2,
+    velocity.y * horizon + ay * horizon ** 2 / 2,
+    velocity.z * horizon + az * horizon ** 2 / 2);
+  const horizontal = Math.hypot(ahead.x, ahead.z);
+  if (horizontal > 6) { ahead.x *= 6 / horizontal; ahead.z *= 6 / horizontal; }
+  ahead.y = MathUtils.clamp(ahead.y * .35, -3, 3);
+  return { trackedY, ahead: { x: ahead.x, y: ahead.y, z: ahead.z } };
+}

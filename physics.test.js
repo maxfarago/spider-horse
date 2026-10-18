@@ -973,3 +973,41 @@ test('air zip has a pronounced forward burst and a timed visual cue', () => {
   p.jumpAction();assert.ok(Math.hypot(p.vel.x,p.vel.z)>=42);
   assert.equal(p.zipBurstAt,p.time);assert.ok(p.soarUntil>p.time);
 });
+
+test('held swing exits the ascending arc before stalling and catches a new forward anchor after airtime', () => {
+  const first={x:0,y:100,z:-30},next={x:0,y:100,z:-100};
+  const p=new SwingPhysics({spawn:{x:0,y:70,z:0},initialVelocity:{x:0,y:-18,z:-25},anchors:[first,next]});
+  p.connect(first);
+  for(let i=0;i<360 && p.anchor;i++)p.step(1/120,{swingHeld:true});
+  assert.equal(p.anchor,null);assert.ok(p.time<2.5);
+  assert.ok(p.vel.y>0 && -p.vel.z>25,'release precedes the forward stall');
+  const released=p.time;
+  for(let i=0;i<70;i++)p.step(1/120,{swingHeld:true});
+  assert.equal(p.anchor,null,'there is a real airborne interval');
+  for(let i=0;i<70 && !p.anchor;i++)p.step(1/120,{swingHeld:true});
+  assert.deepEqual(p.anchor,next);assert.ok(p.time-released>=.7);
+  assert.equal(p.attachmentCount,2);
+});
+
+test('held continuity cannot force a catch without forward geometry or after release', () => {
+  const first={x:0,y:100,z:-30};
+  const make=()=>{const p=new SwingPhysics({spawn:{x:0,y:70,z:0},initialVelocity:{x:0,y:-18,z:-25},anchors:[first]});p.connect(first);return p;};
+  const p=make();for(let i=0;i<360 && p.anchor;i++)p.step(1/120,{swingHeld:true});
+  for(let i=0;i<120;i++)p.step(1/120,{swingHeld:true});
+  assert.equal(p.anchor,null);assert.equal(p.attachmentCount,1,'previous ledge cannot be reused');
+  const q=make();for(let i=0;i<360 && q.anchor;i++)q.step(1/120,{swingHeld:true});
+  q.release({intentional:true});
+  for(let i=0;i<120;i++)q.step(1/120,{swingHeld:false});
+  assert.equal(q.anchor,null);assert.equal(q.swingRearmAt,Infinity);
+});
+
+test('soar gravity and drag weight fades continuously at timeout and through descent', () => {
+  const p=apexSwing();p.release();p.vel.y=10;p.soarUntil=1;
+  p.time=.5;assert.equal(p.soarWeight(),1);
+  p.time=.8;const middle=p.soarWeight();assert.ok(middle>0 && middle<1);
+  p.time=.999;assert.ok(p.soarWeight()<.0001);
+  p.time=1;assert.equal(p.soarWeight(),0);
+  p.time=.5;p.vel.y=-4;assert.equal(p.soarWeight(),.5);
+  p.vel.y=-8;assert.equal(p.soarWeight(),0);
+  p.vel.y=10;p.connect({x:0,y:100,z:-30});assert.equal(p.soarWeight(),0);
+});

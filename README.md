@@ -17,7 +17,7 @@ The local server listens on http://127.0.0.1:4177/. `SKYSTRIDE_PORT=4178 npm sta
 
 ## Controls
 
-Hold **Space / Swing** to attach automatically; release to preserve momentum.
+Hold **Space / Swing** to chain forward swings automatically; release to let go.
 **Left/right or A/D / joystick** steer travel. **Up/down or W/S** move on rooftops.
 **Shift / contextual action** jumps from a roof or attached swing. In flight, it
 zips to a marked perch within 12° of travel direction and a clear approach;
@@ -150,3 +150,28 @@ Air zip adds 18 m/s toward a 42–72 m/s horizontal burst, with a 0.7-second
 soar and radial edge blur. Perch zip travels at up to 68 m/s. Reduce Motion
 suppresses the blur. Bottom-of-arc assistance is limited to 18 m/s², and total
 normal traversal speed remains capped at 78 m/s.
+
+
+### Held-swing continuity
+
+Holding Swing finishes a taut ascending arc when forward speed drops below 78%
+of its peak, after at least 0.45 seconds attached and 36° past the bottom. The
+horse releases with the existing bounded kick, spends at least 0.7 seconds in
+free flight, then searches for a valid forward anchor. It never reuses the previous
+ledge; without a valid target it remains airborne. Manual release cancels the
+pending catch. Collision breaks still require a fresh press.
+
+Soar assistance now fades smoothly over its final 0.45 seconds and as downward
+speed grows from 0 to 8 m/s. Gravity and horizontal drag share that envelope.
+Free-air horizontal drag is 0.06/s, blending toward 0.015/s at full soar strength.
+This pass changes physics only; camera and animation follow-up work is separate.
+
+### Flight camera
+
+Horizontal tracking stays immediate. Vertical tracking eases with a distance-scaled
+lag capped at 2.5 m, allowing the horse to move within the frame through an arc.
+The camera aims along a bounded 0.35-second flight prediction: ballistic while
+free, curved toward the tether while attached. Manual look suppresses predictive
+aiming; Reduce Motion removes the added lag and look-ahead. Teleports and grounded
+or wall-running states reset vertical tracking. Both desired and smoothed camera
+positions are checked against building obstructions.
