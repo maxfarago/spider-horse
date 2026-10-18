@@ -27,7 +27,7 @@ export function createCinematics(renderer, camera) {
         vec2 radial=vUv-.5;
         float edge=smoothstep(.12,.5,length(radial));
         vec3 trail=color;
-        for(int i=1;i<=5;i++) trail+=texture2D(source,vUv-radial*(float(i)*.014*speedBurst*edge)).rgb;
+        for(int i=1;i<=5;i++) trail+=texture2D(source,vUv-radial*(float(i)*.022*speedBurst*edge)).rgb;
         color=mix(color,trail/6.,edge*.8*speedBurst);
       }
       if(depth<.99999 && aoStrength>.01){

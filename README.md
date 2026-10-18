@@ -17,7 +17,20 @@ The local server listens on http://127.0.0.1:4177/. `SKYSTRIDE_PORT=4178 npm sta
 
 ## Controls
 
-Hold Space to attach a web; release to soar. Hold left/right to pan the view on rooftops and in the air. A new airborne web attachment resets the view to the current direction of travel. In the air, up/down select the best predicted swing ahead/behind the camera. Momentum-aware selection forecasts two seconds of constraint-based motion at 30Hz; gameplay physics uses 120Hz substeps. On rooftops, up/down run forward/backward in the viewing direction. Esc pauses. Menus display their keyboard shortcuts.
+Hold **Space / Swing** to attach automatically; release to preserve momentum.
+**Left/right or A/D / joystick** steer travel. **Up/down or W/S** move on rooftops.
+**Shift / contextual action** jumps from a roof or attached swing. In flight, it
+zips to a marked perch within 12° of travel direction and a clear approach;
+without a perch it performs a short air zip. Near perch arrival it becomes
+**Launch**. Mobile has exactly two action buttons: **Swing** and **Jump/Zip/Launch**.
+**C** dives in free flight. The camera follows travel direction; steering
+recenters any optional look offset. **Right-drag / drag the open scene on touch**
+looks around; **Q or double-tap** recenters. Esc pauses. Looking does not choose
+perches or swing anchors. These are keyboard/touch equivalents of PS4-style actions;
+Gamepad API/controller bindings are not implemented in this pass.
+
+This branch uses the original PS4 game as its behavioral reference. It does not
+claim identical proprietary physics. Reference: [PlayStation's 2018 hands-on](https://blog.playstation.com/2018/06/15/playing-marvels-spider-man-made-me-feel-like-spider-man/).
 
 ## Project map
 
@@ -64,14 +77,15 @@ Keep `vendor/LICENSE.three`, `assets/LICENSE.warhorse.txt` and `assets/attributi
 
 Localhost play shows **Swing Lab** with speed, vertical velocity, and tether angle
 (0° directly below the anchor, 90° level with it, 180° directly above).
-On a phone/LAN address, append `?debug=1` to enable it. The panel turns green and
-says **Release now · SNAP** during the ascending release window (20–40° from the bottom). After release it
-keeps the measured before/after speed and event age, so missed windows are visible.
+On a phone/LAN address, append `?debug=1` to enable it. The panel shows the
+current phase without prescribing a jump instant. After a swing-jump it keeps
+the measured before/after speed and event age.
 
-A qualifying release adds just 3 m/s along the existing trajectory, capped at
-78 m/s. There is no upward velocity floor. A 0.65-second soar phase uses 85% of
-normal gravity and reduced horizontal drag. Successful releases briefly add
-radial edge blur; Reduce motion disables it. Passive detaches never trigger it.
+Swing-jumps blend a forward push into upward lift across the ascent: earlier
+for speed, later for height. After at least 0.3 seconds attached, rising ordinary release adds 15% speed
+(up to 6 m/s) along the current trajectory and starts a 0.85-second soar at
+85% gravity. Cleanup and descending release never add a boost. Swing-jumps can add radial edge
+blur; Reduce motion disables it. Speed remains capped at 78 m/s.
 
 ### Controlled traversal
 
@@ -79,11 +93,11 @@ Attachment preserves entry velocity. A maximum-distance rope constraint allows
 up to 1.2 m compliance during a 180 ms catch, then becomes firm. Slack rope never
 pushes. Corrections use swept collisions; obstructed corrections detach safely.
 The street-clearance winch controls target length at a bounded rate without a
-separate spring force. Within 25° of the arc bottom, a capped tangential assist
-helps low speeds approach 24 m/s without slowing faster swings.
-Left/right arrows and the mobile joystick pan the view and steer airborne motion.
+separate spring force. Within 35° of the arc bottom, a capped tangential assist
+helps low speeds approach 38 m/s without slowing faster swings.
+Left/right arrows and the mobile joystick steer; camera look is independent.
 Attached steering acts in the rope tangent plane; free flight rotates horizontal
-velocity without adding speed. A rising release at 20–40° earns the small assist.
+velocity without adding speed. Swing-jump assistance varies continuously; rising release adds a bounded trajectory-aligned boost.
 Reattachment, landing, significant impacts, and input cleanup cancel soaring.
 
 
@@ -118,11 +132,21 @@ penalized. A safe candidate with no release in the horizon remains a fallback.
 Forecasts use at most 68 samples per candidate and retain the existing cache,
 recommendation lock, manual selection, and previous-anchor exclusion.
 
-### Forward view targeting
+### Travel intent and point targeting
 
-Automatic recommendations and mobile Select only consider ledges within 50° of
-the horizontal view direction. Center alignment adds a strong preference on top
-of release quality and safety scoring. Panning outside a locked target's cone
-invalidates it immediately; an empty cone clears the recommendation rather than
-falling back sideways or behind. Mobile choices obey the same rule after selection.
-Explicit directional/manual selection (including select behind) remains an override.
+Swing recommendations use a ±50° cone around travel intent: current momentum
+with a small steering lead, or body heading at low speed. Center preference,
+release-quality scoring, safety checks, and previous-anchor exclusion remain.
+Camera movement cannot alter this cone. The diamond now marks a separate
+view-biased point-zip destination, not a swinging anchor. Point zips use a swept
+approach outside the roof corner, then cross above the edge. Collisions cancel
+the zip; there is no teleport through buildings. Jump near arrival launches
+onward; otherwise the horse settles onto the roof. Air zips have a cooldown and
+require nearby geometry. Holding Swing after a swing-jump can catch again after
+0.55 seconds; releasing Swing cancels the pending automatic catch.
+
+
+Air zip adds 18 m/s toward a 42–72 m/s horizontal burst, with a 0.7-second
+soar and radial edge blur. Perch zip travels at up to 68 m/s. Reduce Motion
+suppresses the blur. Bottom-of-arc assistance is limited to 18 m/s², and total
+normal traversal speed remains capped at 78 m/s.

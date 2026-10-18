@@ -50,3 +50,27 @@ export function bindJoystick(surface, { enabled, change }) {
   surface.addEventListener('contextmenu', event => event.preventDefault());
   return clear;
 }
+
+// Input intent leads momentum slightly; camera yaw is deliberately absent.
+export function travelIntent(velocity, heading, steer = 0) {
+  const speed = Math.hypot(velocity.x, velocity.z);
+  const direction = speed > 3 ? Math.atan2(-velocity.x, -velocity.z) : heading;
+  return direction + Math.max(-1, Math.min(1, steer)) * .4;
+}
+
+export function bindLook(surface, { enabled, change }) {
+  let pointer = null, x = 0, y = 0;
+  const clear = () => { pointer = null; };
+  surface.addEventListener('pointerdown', event => {
+    if (!enabled() || pointer !== null || (event.pointerType !== 'touch' && event.button !== 2)) return;
+    event.preventDefault(); pointer = event.pointerId; x = event.clientX; y = event.clientY;
+    surface.setPointerCapture(pointer);
+  });
+  surface.addEventListener('pointermove', event => {
+    if (event.pointerId !== pointer) return;
+    change(event.clientX-x, event.clientY-y); x=event.clientX; y=event.clientY;
+  });
+  for (const type of ['pointerup','pointercancel','lostpointercapture']) surface.addEventListener(type,event=>{if(event.pointerId===pointer)clear();});
+  surface.addEventListener('contextmenu',event=>event.preventDefault());
+  return clear;
+}

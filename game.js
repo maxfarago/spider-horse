@@ -4,7 +4,7 @@ import { createHorse } from './horse.js';
 import { createWeb } from './web.js';
 import { updateWebTarget } from './web-target.js';
 import { cameraClearance, revealAnchor, turnTowardAnchor } from './anchor-camera.js';
-import { attachmentViewYaw, bindHold, bindJoystick, panView, rooftopInput } from './controls.js';
+import { bindHold, bindJoystick, bindLook, travelIntent, panView } from './controls.js';
 import { traversalFeel } from './traversal-feel.js';
 import { SwingPhysics } from './physics.js';
 import { HDRLoader } from './vendor/HDRLoader.js';
@@ -25,8 +25,8 @@ let now = 0, toastTimeout, renderFrames = 0, previousTime = performance.now(), a
 let frameSelectedAnchor = false, facingAnchor = null, viewYaw = 0, previewAge = 0;
 const anchorViewState = {};
 const previewStartOffset = new THREE.Vector3(), previewLookOffset = new THREE.Vector3();
-const orbit = 0;
-const pitch = .1;
+let orbit = 0, pitch = .1;
+let pointTarget = null;
 let displayedAnchor = null, joystickSteering = 0;
 let lastImpact = -1, lastReset = 0, checkpointPulse = 0, lastUI = 0, autoAttachTime = 0;
 let previousTension = 0, ropeRipple = 0, lastAttachmentCount = 0;
@@ -46,7 +46,7 @@ function toast(message, duration = 3000) {
 }
 function savePreferences() { try { localStorage.setItem('skystride.preferences', JSON.stringify(preferences)); } catch { /* Optional persistence. */ } }
 function anyDialog() { return document.querySelector('dialog[open]') !== null; }
-function clearInput() { displayedAnchor = null; keys.clear(); inputCleanups.forEach(clear => clear()); touchKeys.clear(); physics?.release(); autoAttachTime = 0; }
+function clearInput() { displayedAnchor = null; keys.clear(); inputCleanups.forEach(clear => clear()); touchKeys.clear(); physics?.release(); if (physics) physics.pointZip = null; autoAttachTime = 0; }
 function openDialog(id) { clearInput(); $(id).showModal(); }
 function formatTime(seconds) {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
@@ -176,7 +176,7 @@ function resize() {
   cinematics?.resize(shell.clientWidth * renderer.getPixelRatio(), shell.clientHeight * renderer.getPixelRatio(), preferences.quality === 'high');
 }
 function launch(nextMode = mode) {
-  frameSelectedAnchor = false; facingAnchor = null; viewYaw = 0;
+  frameSelectedAnchor = false; facingAnchor = null; viewYaw = 0; orbit = 0; pitch = .1; pointTarget = null;
   clearInput();
   if ($('loss-dialog').open) $('loss-dialog').close();
   started = true; paused = false; mode = nextMode;
@@ -223,33 +223,20 @@ function startPivotReveal() {
   previewStartOffset.copy(camera.position).sub(horsePosition);
   previewLookOffset.copy(cameraTarget).sub(horsePosition);
 }
-function switchAnchor(direction, facing = 0) {
-  const look = camera.getWorldDirection(new THREE.Vector3());
-  const heading = Math.atan2(-look.x, -look.z);
-  const candidate = facing ? physics.selectDirectionalAnchor(heading, facing) : physics.selectAnchor(direction);
-  if (!candidate) { toast(facing ? `No nearby ledge ${facing > 0 ? 'ahead' : 'behind'} you.` : 'No ledge in reach.'); return; }
-  frameSelectedAnchor = !held('Space');
-  facingAnchor = candidate;
-  startPivotReveal();
-  if (held('Space') && (!physics.anchor || physics.anchor.x !== candidate.x || physics.anchor.y !== candidate.y || physics.anchor.z !== candidate.z)) { physics.release(); attachLedge(candidate); }
-  updateUI();
-}
-function resetAttachmentView(velocity, wasGrounded) {
-  if (wasGrounded) return;
-  viewYaw = attachmentViewYaw(viewYaw, velocity, false);
-  facingAnchor = null; frameSelectedAnchor = false;
+function currentSteer() { return THREE.MathUtils.clamp(Number(held('ArrowLeft') || held('KeyA')) - Number(held('ArrowRight') || held('KeyD')) - joystickSteering, -1, 1); }
+function jumpAction() {
+  if (!started || paused || anyDialog() || physics.lost) return;
+  physics.viewYaw = travelIntent(physics.vel, physics.yaw, currentSteer());
+  physics.contextualJump(travelIntent(physics.vel, physics.yaw, 0), pointTarget); autoAttachTime = 0;
 }
 function attachLedge(candidate) {
-  physics.viewYaw = viewYaw + orbit;
-  const wasGrounded = physics.grounded, velocity = { ...physics.vel }, count = physics.attachmentCount;
-  const attached = physics.attach(candidate);
-  if (physics.attachmentCount !== count) resetAttachmentView(velocity, wasGrounded);
-  return attached;
+  physics.viewYaw = travelIntent(physics.vel, physics.yaw, currentSteer());
+  return physics.attach(candidate);
 }
 function beginSwing() {
   if (!started || paused || anyDialog()) return;
   frameSelectedAnchor = false;
-  if (attachLedge(displayedAnchor)) { tone(170, .08); autoAttachTime = 0; } else { autoAttachTime = 1.4; toast(physics.grounded ? 'No rooftop in reach. Jump with F and hold SPACE.' : 'Keep holding — waiting for a reachable ledge.', 1700); }
+  if (attachLedge(undefined)) { tone(170, .08); autoAttachTime = 0; } else { autoAttachTime = 1.4; toast(physics.grounded ? 'No rooftop in reach. Jump with SHIFT and hold SPACE.' : 'Keep holding — waiting for a reachable ledge.', 1700); }
 }
 function setupEvents() {
   addEventListener('resize', resize);
@@ -288,7 +275,7 @@ function setupEvents() {
     }
     if (event.code === 'Escape') { event.preventDefault(); if (started && !event.repeat) setPaused(true); return; }
     if (event.code === 'Slash') { event.preventDefault(); openDialog('controls-dialog'); return; }
-    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) event.preventDefault();
+    if (['Space', 'ShiftLeft', 'ShiftRight', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) event.preventDefault();
     if (!started) {
       if (event.code === 'Space' || event.code === 'Enter') { launch(); if (event.code === 'Space') keys.add('Space'); }
       return;
@@ -297,11 +284,13 @@ function setupEvents() {
     keys.add(event.code);
     if (event.repeat) return;
     if (event.code === 'Space') beginSwing();
-    if (!physics.grounded && (event.code === 'ArrowUp' || event.code === 'ArrowDown')) switchAnchor(0, event.code === 'ArrowUp' ? 1 : -1);
+    if (event.code === 'ShiftLeft' || event.code === 'ShiftRight') jumpAction();
+    if (event.code === 'KeyC' && !physics.grounded && !physics.anchor && !physics.pointZip) physics.vel.y = Math.max(-65, physics.vel.y - 18);
+    if (event.code === 'KeyQ') { orbit = 0; pitch = .1; }
     if (event.code === 'KeyR') resetRun();
 
   });
-  addEventListener('keyup', (event) => { const wasHeld = keys.delete(event.code); if (wasHeld && event.code === 'Space' && !held('Space')) { physics.release({ launch: true }); autoAttachTime = 0; } });
+  addEventListener('keyup', (event) => { const wasHeld = keys.delete(event.code); if (wasHeld && event.code === 'Space' && !held('Space')) { physics.release({intentional:true}); autoAttachTime = 0; } });
   addEventListener('blur', () => { clearInput(); if (started && !anyDialog()) setPaused(true); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { clearInput(); if (started) setPaused(true); } previousTime = performance.now(); });
   inputCleanups.push(bindJoystick($('steering-joystick'), {
@@ -311,13 +300,12 @@ function setupEvents() {
       $('joystick-thumb').style.transform = `translateX(${value * 30}px)`;
     },
   }));
-  $('select-ledge').onclick = () => {
-    if (!started || physics.lost || paused || anyDialog()) return;
-    const candidate = physics.selectNextForwardAnchor(viewYaw + orbit, displayedAnchor);
-    if (!candidate) { facingAnchor = null; frameSelectedAnchor = false; updateUI(); toast('No new ledge ahead.'); return; }
-    facingAnchor = candidate; frameSelectedAnchor = true;
-    startPivotReveal(); updateUI();
-  };
+  inputCleanups.push(bindLook(canvas, {
+    enabled: () => started && !physics.lost && !paused && !anyDialog(),
+    change: (dx,dy) => { orbit -= dx * .005; pitch = THREE.MathUtils.clamp(pitch + dy * .003, -.35, .65); },
+  }));
+  canvas.addEventListener('dblclick', () => { orbit = 0; pitch = .1; });
+  $('jump-action').onclick = jumpAction;
   document.querySelectorAll('[data-touch]').forEach(button => {
     const mapping = { swing: 'Space', left: 'ArrowLeft', right: 'ArrowRight' };
     const code = mapping[button.dataset.touch];
@@ -330,7 +318,7 @@ function setupEvents() {
       },
       release: (released) => {
         touchKeys.delete(code);
-        if (code === 'Space' && !held('Space')) { physics.release({ launch: released }); autoAttachTime = 0; }
+        if (code === 'Space' && !held('Space')) { physics.release({intentional:released}); autoAttachTime = 0; }
       },
     }));
   });
@@ -338,25 +326,22 @@ function setupEvents() {
 
 function updatePhysics(dt) {
   if (physics.lost) return { turn: 0, forward: 0 };
-  const turn = physics.grounded ? 0 : THREE.MathUtils.clamp(Number(held('ArrowLeft')) - Number(held('ArrowRight')) - joystickSteering, -1, 1), reel = 0;
-  if (held('ArrowLeft') || held('ArrowRight') || joystickSteering) {
-    viewYaw = panView(viewYaw, held, dt, joystickSteering);
-    facingAnchor = null; frameSelectedAnchor = false;
-  }
-  physics.viewYaw = viewYaw + orbit;
-  const { forward, strafe } = rooftopInput(physics.grounded, held);
-  if (physics.grounded) {
-    physics.yaw = viewYaw;
-    facingAnchor = null;
-    frameSelectedAnchor = false;
-  }
+  const steer = currentSteer();
+  const turn = physics.grounded ? 0 : steer, reel = 0;
+  if (physics.grounded) physics.yaw = panView(physics.yaw, () => false, dt, -steer);
+  physics.viewYaw = travelIntent(physics.vel, physics.yaw, steer);
+  const forward = physics.grounded ? Number(held('ArrowUp') || held('KeyW')) - Number(held('ArrowDown') || held('KeyS')) : 0;
+  const strafe = 0;
+  const heading = physics.grounded ? physics.yaw : travelIntent(physics.vel, physics.yaw, 0);
+  const difference = Math.atan2(Math.sin(heading-viewYaw),Math.cos(heading-viewYaw));
+  viewYaw += difference * (1-Math.exp(-dt*4));
+  // Steering brings the optional look offset back behind the horse.
+  if (Math.abs(steer) > .05) orbit *= Math.exp(-dt * 4);
   const previous = { ...physics.pos };
-  const wasGrounded = physics.grounded, incomingVelocity = { ...physics.vel }, attachmentCount = physics.attachmentCount;
-  physics.step(dt, { turn, forward, strafe, reel, swingHeld: held('Space'), swingTarget: displayedAnchor, boost: false });
-  if (physics.attachmentCount !== attachmentCount) resetAttachmentView(incomingVelocity, wasGrounded);
+  physics.step(dt, { turn, forward, strafe, reel, swingHeld: held('Space'), swingTarget: undefined, boost: false });
   if (physics.lost) { loseRun(); return { turn: 0, forward: 0 }; }
   if ((physics.attachmentCount || 0) !== lastAttachmentCount) { lastAttachmentCount = physics.attachmentCount || 0; ropeRipple = 1; tone(190, .065); }
-  if (autoAttachTime > 0 && held('Space')) { autoAttachTime -= dt; if (attachLedge(displayedAnchor)) autoAttachTime = 0; }
+  if (autoAttachTime > 0 && held('Space')) { autoAttachTime -= dt; if (attachLedge(undefined)) autoAttachTime = 0; }
   if (physics.resetCount !== lastReset) { lastReset = physics.resetCount; toast('Back in the city. Keep your line inside the island.'); }
   if (physics.lastImpact && physics.lastImpact.time !== lastImpact) { lastImpact = physics.lastImpact.time; if (physics.lastImpact.speed > 16) tone(65, .08); }
   if (running) {
@@ -387,7 +372,7 @@ function updateHorse(dt, input) {
     position = physics.pos; speed = Math.hypot(physics.vel.x, physics.vel.z); grounded = physics.grounded; swinging = !!physics.anchor; verticalSpeed = physics.vel.y;
     const pitchGoal = grounded ? 0 : physics.wallRun ? -.8 : THREE.MathUtils.clamp(-physics.vel.y * .008, -.32, .3);
     horse.group.rotation.x = THREE.MathUtils.damp(horse.group.rotation.x, pitchGoal, 4, dt);
-    horse.group.rotation.y = viewYaw;
+    horse.group.rotation.y = physics.grounded ? physics.yaw : travelIntent(physics.vel, physics.yaw, 0);
     horse.group.rotation.z = THREE.MathUtils.damp(horse.group.rotation.z, -input.turn * (preferences.reduceMotion ? .08 : .18 + feel.swing * .12), 5, dt);
   }
   horse.group.position.set(position.x, position.y - 2.2, position.z);
@@ -462,14 +447,14 @@ function updateCamera(dt) {
   if (renderFrames % 8 === 0) { sun.position.set(horsePosition.x - 150, horsePosition.y + 105, horsePosition.z + 85); sun.target.position.copy(horsePosition); }
 }
 function updateRope() {
-  const anchor = started ? physics.anchor : { x: city.spawn.x, y: city.spawn.y + 60, z: city.spawn.z };
+  const anchor = started ? (physics.anchor || physics.pointZip?.anchor) : { x: city.spawn.x, y: city.spawn.y + 60, z: city.spawn.z };
   rope.group.visible = !!anchor;
   if (!anchor) return;
   horse.group.updateMatrixWorld(true); (started ? horse.attachment : horse.hangingAttachment).getWorldPosition(tetherStart);
   const end = new THREE.Vector3(anchor.x, anchor.y, anchor.z);
   const distance = tetherStart.distanceTo(end);
-  const tension = started ? physics.tension || 0 : .5;
-  const slack = started ? Math.max(0, physics.ropeLength - distance) * .33 : 0;
+  const tension = started ? physics.pointZip ? 1 : physics.tension || 0 : .5;
+  const slack = started && !physics.pointZip ? Math.max(0, physics.ropeLength - distance) * .33 : 0;
   if (Math.abs(tension - previousTension) > .22) ropeRipple = Math.max(ropeRipple, .4);
   previousTension = tension;
   const side = new THREE.Vector3().subVectors(end, tetherStart).cross(new THREE.Vector3(0, 1, 0)).normalize();
@@ -499,19 +484,21 @@ function updateParticles() {
   streaks.geometry.attributes.position.needsUpdate = true;
 }
 function snapBurst() {
-  return physics.lastSnap && physics.lastSnap.gain > 1 ? Math.max(0, 1 - (physics.time - physics.lastSnap.time) / .45) : 0;
+  if (physics.lost || physics.grounded || physics.anchor) return 0;
+  const jump = physics.lastSnap && physics.lastSnap.gain > 1 ? Math.max(0, 1 - (physics.time - physics.lastSnap.time) / .45) : 0;
+  const zip = Math.max(0, 1 - (physics.time - physics.zipBurstAt) / .7);
+  return Math.max(jump, zip, physics.pointZip ? .75 : 0);
 }
 function updateUI() {
-  physics.viewYaw = viewYaw + orbit;
+  physics.viewYaw = travelIntent(physics.vel, physics.yaw, currentSteer());
   const debug = physics.swingTelemetry();
   $('swing-debug').hidden = !started || !(location.hostname === 'localhost' || location.hostname === '127.0.0.1' || new URLSearchParams(location.search).get('debug') === '1');
-  $('swing-debug').dataset.ready = String(debug.ready);
   $('debug-speed').textContent = `${Math.round(debug.speed * 3.6)} km/h`;
-  $('debug-phase').textContent = `${traversalFeel(physics).phase.toUpperCase()} · ${debug.phase}`;
+  $('debug-phase').textContent = `${(physics.pointZip ? 'point-zip' : traversalFeel(physics).phase).toUpperCase()} · ${debug.phase}`;
   $('debug-angle').hidden = debug.angle === null;
   $('debug-angle').style.left = `${(debug.angle || 0) / 180 * 100}%`;
   $('debug-detail').textContent = `${debug.angle === null ? 'No tether' : `${Math.round(debug.angle)}° from bottom`} · vertical ${debug.verticalSpeed.toFixed(1)} m/s`;
-  $('debug-snap').textContent = debug.lastSnap ? `SNAP ${Math.round(debug.lastSnap.before * 3.6)} → ${Math.round(debug.lastSnap.after * 3.6)} km/h · ${Math.max(0, physics.time - debug.lastSnap.time).toFixed(1)}s ago` : 'Release on the rising arc for a small boost';
+  $('debug-snap').textContent = debug.lastSnap ? `JUMP ${Math.round(debug.lastSnap.before * 3.6)} → ${Math.round(debug.lastSnap.after * 3.6)} km/h · ${Math.max(0, physics.time - debug.lastSnap.time).toFixed(1)}s ago` : 'Jump: early for speed · later for height';
   const speed = started ? Math.hypot(physics.vel.x, physics.vel.y, physics.vel.z) * 3.6 : 0;
   $('speed').textContent = Math.round(speed).toString();
   $('speed-bar').style.width = `${Math.min(speed / 250 * 100, 100)}%`;
@@ -519,14 +506,20 @@ function updateUI() {
   $('energy-bar').style.width = `${physics.energy * 100}%`;
   const active = physics.anchor;
   $('flight-state').textContent = physics.lost ? 'Run over' : physics.grounded ? 'On a rooftop' : active ? 'Swinging' : physics.vel.y > 2 ? 'Soaring' : 'Falling';
-  $('tether-status').textContent = !started ? 'Ready when you are' : physics.lost ? 'R to try again' : active ? `${Math.round((physics.tension || 0) * 100)}% tension` : physics.grounded ? 'F to jump' : 'Ready to swing';
+  $('tether-status').textContent = !started ? 'Ready when you are' : physics.lost ? 'R to try again' : active ? `${Math.round((physics.tension || 0) * 100)}% tension` : physics.grounded ? 'SHIFT to jump' : 'Ready to swing';
   $('tension-bar').style.width = `${Math.min(1, physics.tension || 0) * 100}%`;
   const lowAltitude = started && !physics.lost && !physics.grounded && horsePosition.y < 20;
   shell.dataset.lowAltitude = String(lowAltitude);
   $('altitude-note').textContent = physics.lost ? 'On the ground' : lowAltitude ? 'Mind the pavement' : 'Above the street';
   $('timer').textContent = formatTime(elapsed); $('checkpoint-count').textContent = `${String(checkpoint).padStart(2, '0')} / 08`; $('progress-bar').style.width = `${checkpoint / 8 * 100}%`;
-  const anchor = frameSelectedAnchor ? physics.findAnchor() : active || physics.findAnchor();
-  displayedAnchor = anchor;
+  const swingAnchor = active || physics.findAnchor();
+  displayedAnchor = swingAnchor;
+  const action = physics.contextualAction(travelIntent(physics.vel, physics.yaw, 0));
+  pointTarget = action.target || null;
+  $('jump-action').textContent = action.label;
+  $('jump-action').setAttribute('aria-label', action.label);
+  $('jump-action').disabled = action.kind === 'wait';
+  const anchor = pointTarget?.staging || null;
   const anchorNumber = anchor ? city.anchors.findIndex(a => a.x === anchor.x && a.y === anchor.y && a.z === anchor.z) + 1 : 0;
   updateWebTarget($('web-target'), $('web-target-state'), $('web-target-distance'), { started, anchor, position: physics.pos, attached: !!active, anchorNumber });
   if (started && anchor) {
@@ -535,7 +528,7 @@ function updateUI() {
     $('anchor-marker').classList.toggle('occluded', occluded);
     const visible = projected.z > -1 && projected.z < 1 && Math.abs(projected.x) < .96 && Math.abs(projected.y) < .9;
     $('anchor-marker').classList.toggle('hidden', !visible);
-    if (visible) { $('anchor-marker').style.left = `${(projected.x * .5 + .5) * 100}%`; $('anchor-marker').style.top = `${(-projected.y * .5 + .5) * 100}%`; $('anchor-label').textContent = active ? `Stretch ${(physics.stretch || 0).toFixed(1)} m` : `Ledge ${anchorNumber}`; if (occluded) $('anchor-label').textContent += ' · Behind building'; }
+    if (visible) { $('anchor-marker').style.left = `${(projected.x * .5 + .5) * 100}%`; $('anchor-marker').style.top = `${(-projected.y * .5 + .5) * 100}%`; $('anchor-label').textContent = 'Zip to point'; if (occluded) $('anchor-label').textContent += ' · Behind building'; }
   } else $('anchor-marker').classList.add('hidden');
   if (running && city.route[checkpoint]) { $('checkpoint-distance').textContent = `${Math.round(horsePosition.distanceTo(city.route[checkpoint]))} m`; }
   const district = physics.pos.z < -650 ? 'Herald Square' : physics.pos.z < -250 ? 'Midtown South' : 'Midtown West';
