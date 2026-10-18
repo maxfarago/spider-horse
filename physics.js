@@ -95,6 +95,9 @@ export class SwingPhysics {
     this.grounded = this.pos.y <= FOOT_CLEARANCE;
     this.anchor = null;
     this.selectedAnchor = null;
+    this.recommendedAnchor = null;
+    this.recommendationUntil = 0;
+    this.previousAnchor = null;
     this.anchorRanking = null;
     this.ropeLength = 0;
     this.launchReelTarget = null;
@@ -186,11 +189,29 @@ export class SwingPhysics {
     return choices;
   }
 
+  isReachableAnchor(candidate) {
+    if (!candidate || !this.anchors.includes(candidate)) return false;
+    const delta = { x: candidate.x - this.pos.x, y: candidate.y - this.pos.y, z: candidate.z - this.pos.z };
+    const distance = length(delta);
+    return distance >= 3 && distance <= 75 && !this.ropeObstacles.some(box => sweepBox(this.pos, delta, box));
+  }
+
+  isForwardAnchor(candidate) {
+    if (!candidate) return false;
+    if (this.previousAnchor && candidate.x === this.previousAnchor.x && candidate.y === this.previousAnchor.y && candidate.z === this.previousAnchor.z) return false;
+    const speed = Math.hypot(this.vel.x, this.vel.z);
+    const x = speed > 3 ? this.vel.x / speed : -Math.sin(this.yaw);
+    const z = speed > 3 ? this.vel.z / speed : -Math.cos(this.yaw);
+    return (candidate.x - this.pos.x) * x + (candidate.z - this.pos.z) * z > .01;
+  }
+
   findAnchor() {
-    const candidates = this.selectableAnchors();
-    if (this.selectedAnchor && candidates.includes(this.selectedAnchor)) return this.selectedAnchor;
+    if (this.selectedAnchor && this.isReachableAnchor(this.selectedAnchor)) return this.selectedAnchor;
     this.selectedAnchor = null;
-    return candidates[0] || null;
+    if (this.time < this.recommendationUntil && this.isReachableAnchor(this.recommendedAnchor) && this.isForwardAnchor(this.recommendedAnchor)) return this.recommendedAnchor;
+    this.recommendedAnchor = this.rankedAnchors().find(a => this.isForwardAnchor(a) && this.isReachableAnchor(a)) || null;
+    this.recommendationUntil = this.time + .45;
+    return this.recommendedAnchor;
   }
 
   selectAnchor(direction) {
@@ -214,12 +235,14 @@ export class SwingPhysics {
     return candidate;
   }
 
-  attach() {
+  attach(candidate = undefined) {
     if (this.lost) return false;
     if (this.anchor) return true;
-    this.anchorRanking = null;
-    const candidate = this.findAnchor();
-    if (!candidate) return false;
+    // An explicit target is the one shown by the HUD. Never silently replace
+    // it at keydown if movement has made it invalid.
+    if (candidate === undefined) candidate = this.findAnchor();
+    if (!this.isReachableAnchor(candidate)) return false;
+    if (candidate !== this.selectedAnchor && !this.isForwardAnchor(candidate)) return false;
     this.connect(candidate);
     return true;
   }
@@ -248,8 +271,38 @@ export class SwingPhysics {
     this.updateTetherState();
   }
 
-  release() {
+  release({ launch = false } = {}) {
+    if (launch && this.anchor && !this.lost && !this.grounded && this.time - this.attachedAt >= .12) {
+      const state = this.updateTetherState();
+      // Assist in the actual swing tangent. Existing velocity (including the
+      // elastic recoil) survives release; timing determines the launch angle.
+      if (state.distance > 1e-6 && state.distance >= this.ropeLength - .05) {
+        const radialSpeed = dot(this.vel, state.radial) / state.distance;
+        const tangent = {
+          x: this.vel.x - state.radial.x / state.distance * radialSpeed,
+          y: this.vel.y - state.radial.y / state.distance * radialSpeed,
+          z: this.vel.z - state.radial.z / state.distance * radialSpeed,
+        };
+        const speed = length(tangent);
+        if (speed > 1) {
+          // Stored extension adds a little snap, without a hold-time charge or
+          // a minimum upward velocity that makes every release the same jump.
+          const loaded = Math.max(0, this.stretch - 2.8);
+          const recoil = Math.min(4, Math.sqrt(SPRING_STIFFNESS / HORSE_MASS) * loaded * .2);
+          const assist = Math.min(10, speed * .18 + recoil);
+          this.vel.x += tangent.x / speed * assist;
+          this.vel.y += tangent.y / speed * assist;
+          this.vel.z += tangent.z / speed * assist;
+          this.limitSpeed();
+        }
+      }
+    }
     const wasAttached = this.anchor !== null;
+    if (this.anchor) {
+      this.previousAnchor = { ...this.anchor };
+      if (this.selectedAnchor && this.selectedAnchor.x === this.anchor.x && this.selectedAnchor.y === this.anchor.y && this.selectedAnchor.z === this.anchor.z) this.selectedAnchor = null;
+      this.recommendedAnchor = null; this.recommendationUntil = 0; this.anchorRanking = null;
+    }
     this.anchor = null;
     this.launchReelTarget = null;
     this.tension = 0;
@@ -259,12 +312,12 @@ export class SwingPhysics {
     return wasAttached;
   }
 
-  maintainHeldSwing() {
+  maintainHeldSwing(candidate = undefined) {
     // Retry only the initial catch. A held cord never transfers to a new roof,
     // including after a collision breaks it; the player must release first.
     if (this.anchor || this.heldAttachmentSpent || this.time < this.nextAnchorCheck) return;
     this.nextAnchorCheck = this.time + 0.12;
-    this.attach();
+    this.attach(candidate);
   }
 
   updateTetherState() {
@@ -341,7 +394,7 @@ export class SwingPhysics {
     return true;
   }
 
-  step(dt, { forward = 0, strafe = 0, turn = 0, reel = 0, boost = false, swingHeld = false } = {}) {
+  step(dt, { forward = 0, strafe = 0, turn = 0, reel = 0, boost = false, swingHeld = false, swingTarget = undefined } = {}) {
     if (this.lost || !Number.isFinite(dt) || dt <= 0) return this.snapshot();
     // Drop excess time after a background tab resumes; never integrate a huge
     // single step. At normal frame rates the same fixed upper step is used.
@@ -355,6 +408,7 @@ export class SwingPhysics {
       reel: clamp(Number(reel) || 0, -1, 1),
       boost: Boolean(boost),
       swingHeld: Boolean(swingHeld),
+      swingTarget,
     };
     for (let index = 0; index < count && !this.lost; index += 1) this.integrate(h, input);
     if (
@@ -369,7 +423,7 @@ export class SwingPhysics {
   integrate(dt, input) {
     this.time += dt;
     this.yaw += input.turn * dt * 1.5;
-    if (input.swingHeld) this.maintainHeldSwing();
+    if (input.swingHeld) this.maintainHeldSwing(input.swingTarget);
     else this.heldAttachmentSpent = false;
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PerspectiveCamera, Vector3 } from './vendor/three.module.js';
-import { frameAnchor, turnTowardAnchor, revealAnchor } from './anchor-camera.js';
+import { cameraClearance, chooseAnchorView, frameAnchor, turnTowardAnchor, revealAnchor } from './anchor-camera.js';
 
 test('selected anchors and horse fit the camera, including behind and portrait views', () => {
   for (const aspect of [390 / 844, 1, 16 / 9]) {
@@ -59,5 +59,44 @@ test('pivot reveal finishes within 280ms with the horse centered and pivot visib
       assert.ok(Math.abs(pivot.x)<.86 && Math.abs(pivot.y)<.86 && pivot.z<1 && pivot.z>-1);
       assert.ok(Math.abs(center.x)<1e-10 && Math.abs(center.y)<1e-10);
     }
+  }
+});
+
+
+test('camera clearance detects thin walls and leaves unobstructed segments alone', () => {
+  const from = new Vector3(0, 10, 0), to = new Vector3(0, 10, 40);
+  const wall = { minX: -5, maxX: 5, minZ: 10, maxZ: 10.05, height: 30 };
+  assert.ok(cameraClearance(from, to, [wall], .8) < .25);
+  assert.equal(cameraClearance(from, new Vector3(20, 10, 0), [wall]), 1);
+});
+
+test('selected framing finds a clear alternative and keeps both endpoints visible', () => {
+  for (const aspect of [390 / 844, 16 / 9]) {
+    const horse = new Vector3(0, 40, 0), anchor = new Vector3(0, 60, -40);
+    const buildings = [{ minX: -4, maxX: 4, minZ: 12, maxZ: 20, height: 90 }];
+    const eye = new Vector3(), aim = new Vector3(), state = {};
+    chooseAnchorView(horse, anchor, 0, 54, aspect, buildings, state, eye, aim);
+    assert.equal(cameraClearance(horse, eye, buildings, .8), 1);
+    assert.equal(cameraClearance(eye, anchor, buildings), 1);
+    const camera = new PerspectiveCamera(54, aspect, .15, 3000);
+    camera.position.copy(eye); camera.lookAt(aim); camera.updateMatrixWorld(true);
+    for (const point of [horse, anchor]) {
+      const p = point.clone().project(camera);
+      assert.ok(Math.abs(p.x) < .86 && Math.abs(p.y) < .86);
+    }
+    const previous = { ...state };
+    chooseAnchorView(horse, anchor, .001, 54, aspect, buildings, state, eye, aim);
+    assert.deepEqual(state, previous, 'tiny motion should retain the chosen side');
+  }
+});
+
+test('reveal transition stays in front of a facade even when no view clears it', () => {
+  const horse = new Vector3(0, 40, 0), anchor = new Vector3(0, 60, -40);
+  const buildings = [{ minX: -200, maxX: 200, minZ: 4, maxZ: 6, height: 300 }];
+  const camera = new PerspectiveCamera(54, 1, .15, 3000), aim = new Vector3(), state = {};
+  for (let i = 0; i <= 60; i++) {
+    revealAnchor(camera, aim, horse, anchor, new Vector3(0, 3, 2), new Vector3(), i / 60, buildings, state);
+    assert.equal(cameraClearance(horse, camera.position, buildings, .8), 1);
+    assert.ok(Number.isFinite(camera.position.length()));
   }
 });
