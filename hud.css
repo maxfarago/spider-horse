@@ -114,3 +114,6 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
 .loading-track i{display:block;width:40%;height:100%;border-radius:inherit;background:#e9b99b;animation:silk-loading 1.2s cubic-bezier(.45,0,.55,1) infinite alternate}
 @keyframes silk-loading{0%{transform:translateX(0)}100%{transform:translateX(150%)}}
 @media(prefers-reduced-motion:reduce){.loading-track i{width:100%;animation:loading-breathe 2s ease-in-out infinite}@keyframes loading-breathe{50%{opacity:.35}}}
+
+/* Keep selected ledges legible when geometry hides the actual rooftop. */
+.anchor-marker.occluded>span{border-style:dashed;background:#142b35dd;box-shadow:0 0 0 4px #fff3}

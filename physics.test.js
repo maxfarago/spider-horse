@@ -386,7 +386,7 @@ test('arrow cycling wraps ranked choices and never silently transfers an attache
 
 test('unreachable explicit selection falls back, with at most five choices within 75m', () => {
   const anchors = [10,20,30,40,50,60,90,120].map(x => ({x,y:45,z:50}));
-  const p = new SwingPhysics({anchors});
+  const p = new SwingPhysics({anchors, initialVelocity:{x:16,y:0,z:0}});
   const choices = p.selectableAnchors();
   assert.equal(choices.length,5);
   for (let i=0;i<12;i++) assert.ok(choices.includes(p.selectAnchor(1)));
@@ -470,4 +470,121 @@ test('swing forecasts have bounded work and repeated HUD reads reuse the ranking
   } finally {
     SwingPhysics.prototype.integrate = integrate;
   }
+});
+
+
+function releaseFixture(angle, speed = 35, stretch = 6) {
+  const radians = angle * Math.PI / 180;
+  const p = new SwingPhysics({ spawn: { x: 0, y: 100, z: 0 }, anchors: [] });
+  p.connect({ x: 0, y: 100 + Math.cos(radians) * 40, z: Math.sin(radians) * 40 });
+  p.ropeLength = 40 - stretch; p.time = 1;
+  p.vel = { x: 0, y: Math.sin(radians) * speed, z: -Math.cos(radians) * speed };
+  return p;
+}
+
+test('release timing preserves horizontal, rising and near-apex swing trajectories', () => {
+  const results = [];
+  for (const angle of [0, 35, 75]) {
+    const p = releaseFixture(angle), before = { ...p.vel };
+    p.release({ launch: true });
+    assert.ok(Math.hypot(p.vel.y, p.vel.z) > Math.hypot(before.y, before.z));
+    assert.ok(Math.abs(Math.atan2(p.vel.y, -p.vel.z) - angle * Math.PI / 180) < 1e-10);
+    assert.equal(p.anchor, null);
+    results.push(p.vel);
+  }
+  assert.equal(results[0].y, 0, 'bottom release does not force an upward jump');
+  assert.ok(-results[0].z > -results[1].z && -results[1].z > -results[2].z);
+  assert.ok(results[2].y > results[1].y && results[1].y > results[0].y);
+});
+
+test('release preserves elastic radial recoil while giving the tangent a bounded assist', () => {
+  const p = releaseFixture(0);
+  p.vel.y = 12;
+  p.release({ launch: true });
+  assert.equal(p.vel.y, 12);
+  assert.ok(p.vel.z < -35 && p.vel.z >= -45);
+  const outgoing = { ...p.vel }; p.release({ launch: true });
+  assert.deepEqual(p.vel, outgoing);
+  const falling = releaseFixture(-35); falling.release({ launch: true });
+  assert.ok(falling.vel.y < 0, 'early release keeps a descending trajectory');
+});
+
+test('slack, stationary, rapid and passive releases do not invent a launch', () => {
+  const slack = releaseFixture(35, 35, -5);
+  const stationary = releaseFixture(0, 0);
+  const fresh = releaseFixture(35); fresh.time = .05;
+  for (const p of [slack, stationary, fresh]) {
+    const before = { ...p.vel }; p.release({ launch: true });
+    assert.deepEqual(p.vel, before);
+  }
+  const passive = releaseFixture(35), before = { ...passive.vel };
+  passive.release(); assert.deepEqual(passive.vel, before);
+});
+
+test('release assists follow three-dimensional momentum and respect the speed cap', () => {
+  const p = releaseFixture(0, 70);
+  p.vel = { x: 42, y: 0, z: -56 };
+  p.release({ launch: true });
+  assert.ok(Math.abs(p.vel.x / -p.vel.z - .75) < 1e-10);
+  assert.ok(Math.hypot(p.vel.x, p.vel.y, p.vel.z) <= 78 + 1e-9);
+  const brief = releaseFixture(35), long = releaseFixture(35);
+  brief.time = .2; long.time = 10;
+  brief.release({ launch: true }); long.release({ launch: true });
+  assert.deepEqual(brief.vel, long.vel, 'time held alone does not charge a launch');
+});
+
+
+test('recommendation stays locked briefly and Space attaches to the displayed ledge', () => {
+  const a = {x:0,y:75,z:-25}, b = {x:15,y:75,z:-30};
+  const p = new SwingPhysics({anchors:[a,b],spawn:{x:0,y:50,z:0}});
+  let ranked = [a,b]; p.rankedAnchors = () => ranked;
+  const displayed = p.findAnchor();
+  ranked = [b,a]; p.time = .3;
+  assert.equal(p.findAnchor(), displayed, 'score changes do not flicker the marker');
+  p.time = .46;
+  assert.equal(p.findAnchor(), b, 'recommendation can update after the lock');
+  assert.equal(p.attach(displayed), true, 'keydown honors what was last rendered, even after expiry');
+  assert.deepEqual(p.anchor, a);
+});
+
+test('stale marker is rejected without attaching a different ledge', () => {
+  const a = {x:0,y:75,z:-25}, b = {x:15,y:75,z:-30};
+  const p = new SwingPhysics({anchors:[a,b],spawn:{x:0,y:50,z:0}});
+  p.rankedAnchors = () => [a,b];
+  const shown = p.findAnchor();
+  p.ropeObstacles = [{minX:-2,maxX:2,minY:0,maxY:100,minZ:-20,maxZ:-10}];
+  assert.equal(p.attach(shown), false);
+  assert.equal(p.anchor, null);
+  assert.equal(p.findAnchor(), b, 'blocked recommendation invalidates before lock expires');
+  p.step(1/60,{swingHeld:true,swingTarget:shown});
+  assert.equal(p.anchor,null,'held retry cannot silently substitute another marker');
+  p.nextAnchorCheck = 0;
+  p.step(1/60,{swingHeld:true,swingTarget:b});
+  assert.deepEqual(p.anchor,b);
+});
+
+test('release clears the used manual choice and excludes the previous ledge from automatic picks', () => {
+  const used = {x:0,y:75,z:-25}, next = {x:10,y:80,z:-45}, rear = {x:0,y:80,z:20};
+  const p = new SwingPhysics({anchors:[used,next,rear],spawn:{x:0,y:50,z:0}});
+  p.rankedAnchors = () => [used,rear,next];
+  p.selectedAnchor = used; p.attach(used); p.release();
+  assert.equal(p.selectedAnchor,null);
+  assert.equal(p.findAnchor(),next,'previous ledge is excluded even while still ahead');
+  p.rankedAnchors = () => [used,rear]; p.recommendationUntil = 0;
+  assert.equal(p.findAnchor(),null,'no backward fallback when no new forward ledge exists');
+  p.vel.z = 20;
+  assert.equal(p.findAnchor(),rear,'forward follows current momentum, not fixed world heading');
+  p.reset();
+  assert.equal(p.previousAnchor,null);
+});
+
+test('recommendation unlocks immediately on reversal or loss of range', () => {
+  const a={x:0,y:75,z:-25}, b={x:0,y:75,z:25};
+  const p = new SwingPhysics({anchors:[a,b],spawn:{x:0,y:50,z:0}});
+  p.rankedAnchors = () => [a,b];
+  assert.equal(p.findAnchor(),a);
+  p.vel.z = 16;
+  assert.equal(p.findAnchor(),b);
+  p.pos.z = 110;
+  assert.equal(p.findAnchor(),null);
 });

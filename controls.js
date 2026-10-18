@@ -1,8 +1,8 @@
 export function bindHold(button, { enabled, press, release }) {
   let pointer = null;
-  const clear = () => {
+  const clear = (released = false) => {
     if (pointer === null) return;
-    pointer = null; button.setAttribute('aria-pressed', 'false'); release();
+    pointer = null; button.setAttribute('aria-pressed', 'false'); release(released);
   };
   button.addEventListener('pointerdown', event => {
     if (pointer !== null || event.button !== 0 || !enabled()) return;
@@ -10,7 +10,7 @@ export function bindHold(button, { enabled, press, release }) {
     button.setPointerCapture(pointer); button.setAttribute('aria-pressed', 'true'); press();
   });
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
-    button.addEventListener(type, event => { if (event.pointerId === pointer) clear(); });
+    button.addEventListener(type, event => { if (event.pointerId === pointer) clear(type === 'pointerup'); });
   }
   button.addEventListener('contextmenu', event => event.preventDefault());
   return clear;

@@ -3,7 +3,7 @@ import { createCity } from './city.js';
 import { createHorse } from './horse.js';
 import { createWeb } from './web.js';
 import { updateWebTarget } from './web-target.js';
-import { revealAnchor, turnTowardAnchor } from './anchor-camera.js';
+import { cameraClearance, revealAnchor, turnTowardAnchor } from './anchor-camera.js';
 import { bindHold, rooftopInput } from './controls.js';
 import { SwingPhysics } from './physics.js';
 import { HDRLoader } from './vendor/HDRLoader.js';
@@ -22,9 +22,11 @@ let renderer, scene, camera, city, horse, physics, sun, ambient, fill, skyMateri
 let started = false, paused = false, mode = 'roam', checkpoint = 0, elapsed = 0, running = false;
 let now = 0, toastTimeout, renderFrames = 0, previousTime = performance.now(), accumulator = 0;
 let frameSelectedAnchor = false, facingAnchor = null, viewYaw = 0, previewAge = 0;
+const anchorViewState = {};
 const previewStartOffset = new THREE.Vector3(), previewLookOffset = new THREE.Vector3();
 const orbit = 0;
 const pitch = .1;
+let displayedAnchor = null;
 let lastImpact = -1, lastReset = 0, checkpointPulse = 0, lastUI = 0, autoAttachTime = 0;
 let previousTension = 0, ropeRipple = 0, lastAttachmentCount = 0;
 let audioContext, windGain, windFilter, cityGain;
@@ -43,7 +45,7 @@ function toast(message, duration = 3000) {
 }
 function savePreferences() { try { localStorage.setItem('skystride.preferences', JSON.stringify(preferences)); } catch { /* Optional persistence. */ } }
 function anyDialog() { return document.querySelector('dialog[open]') !== null; }
-function clearInput() { keys.clear(); inputCleanups.forEach(clear => clear()); touchKeys.clear(); physics?.release(); autoAttachTime = 0; }
+function clearInput() { displayedAnchor = null; keys.clear(); inputCleanups.forEach(clear => clear()); touchKeys.clear(); physics?.release(); autoAttachTime = 0; }
 function openDialog(id) { clearInput(); $(id).showModal(); }
 function formatTime(seconds) {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
@@ -216,6 +218,7 @@ function quitToTitle() {
 }
 function startPivotReveal() {
   previewAge = 0;
+  for (const key of Object.keys(anchorViewState)) delete anchorViewState[key];
   previewStartOffset.copy(camera.position).sub(horsePosition);
   previewLookOffset.copy(cameraTarget).sub(horsePosition);
 }
@@ -233,7 +236,7 @@ function switchAnchor(direction, facing = 0) {
 function beginSwing() {
   if (!started || paused || anyDialog()) return;
   frameSelectedAnchor = false;
-  if (physics.attach()) { tone(170, .08); autoAttachTime = 0; } else { autoAttachTime = 1.4; toast(physics.grounded ? 'No rooftop in reach. Jump with F and hold SPACE.' : 'Keep holding — waiting for a reachable ledge.', 1700); }
+  if (physics.attach(displayedAnchor)) { tone(170, .08); autoAttachTime = 0; } else { autoAttachTime = 1.4; toast(physics.grounded ? 'No rooftop in reach. Jump with F and hold SPACE.' : 'Keep holding — waiting for a reachable ledge.', 1700); }
 }
 function setupEvents() {
   addEventListener('resize', resize);
@@ -286,7 +289,7 @@ function setupEvents() {
     if (event.code === 'KeyR') resetRun();
 
   });
-  addEventListener('keyup', (event) => { keys.delete(event.code); if (event.code === 'Space' && !held('Space')) { physics.release(); autoAttachTime = 0; } });
+  addEventListener('keyup', (event) => { const wasHeld = keys.delete(event.code); if (wasHeld && event.code === 'Space' && !held('Space')) { physics.release({ launch: true }); autoAttachTime = 0; } });
   addEventListener('blur', () => { clearInput(); if (started && !anyDialog()) setPaused(true); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { clearInput(); if (started) setPaused(true); } previousTime = performance.now(); });
   document.querySelectorAll('[data-touch]').forEach(button => {
@@ -299,9 +302,9 @@ function setupEvents() {
         touchKeys.add(code);
         if (code === 'Space') beginSwing();
       },
-      release: () => {
+      release: (released) => {
         touchKeys.delete(code);
-        if (code === 'Space' && !held('Space')) { physics.release(); autoAttachTime = 0; }
+        if (code === 'Space' && !held('Space')) { physics.release({ launch: released }); autoAttachTime = 0; }
       },
     }));
   });
@@ -317,10 +320,10 @@ function updatePhysics(dt) {
     frameSelectedAnchor = false;
   }
   const previous = { ...physics.pos };
-  physics.step(dt, { turn, forward, strafe, reel, swingHeld: held('Space'), boost: false });
+  physics.step(dt, { turn, forward, strafe, reel, swingHeld: held('Space'), swingTarget: displayedAnchor, boost: false });
   if (physics.lost) { loseRun(); return { turn: 0, forward: 0 }; }
   if ((physics.attachmentCount || 0) !== lastAttachmentCount) { lastAttachmentCount = physics.attachmentCount || 0; ropeRipple = 1; tone(190, .065); }
-  if (autoAttachTime > 0 && held('Space')) { autoAttachTime -= dt; if (physics.attach()) autoAttachTime = 0; }
+  if (autoAttachTime > 0 && held('Space')) { autoAttachTime -= dt; if (physics.attach(displayedAnchor)) autoAttachTime = 0; }
   if (physics.resetCount !== lastReset) { lastReset = physics.resetCount; toast('Back in the city. Keep your line inside the island.'); }
   if (physics.lastImpact && physics.lastImpact.time !== lastImpact) { lastImpact = physics.lastImpact.time; if (physics.lastImpact.speed > 16) tone(65, .08); }
   if (running) {
@@ -408,7 +411,7 @@ function updateCamera(dt) {
   const framedAnchor = started && frameSelectedAnchor ? physics.anchor || physics.findAnchor() : null;
   if (framedAnchor) {
     previewAge += dt;
-    revealAnchor(camera, cameraTarget, horsePosition, framedAnchor, previewStartOffset, previewLookOffset, previewAge);
+    revealAnchor(camera, cameraTarget, horsePosition, framedAnchor, previewStartOffset, previewLookOffset, previewAge, city.buildings, anchorViewState);
   } else {
     camera.position.lerp(desiredCamera, 1 - Math.exp(-dt * (started ? 3.5 : 2.8)));
     cameraTarget.lerp(desiredTarget, 1 - Math.exp(-dt * (started ? 3.5 : 7)));
@@ -468,13 +471,16 @@ function updateUI() {
   $('altitude-note').textContent = physics.lost ? 'On the ground' : lowAltitude ? 'Mind the pavement' : 'Above the street';
   $('timer').textContent = formatTime(elapsed); $('checkpoint-count').textContent = `${String(checkpoint).padStart(2, '0')} / 08`; $('progress-bar').style.width = `${checkpoint / 8 * 100}%`;
   const anchor = active || physics.findAnchor();
+  displayedAnchor = anchor;
   const anchorNumber = anchor ? city.anchors.findIndex(a => a.x === anchor.x && a.y === anchor.y && a.z === anchor.z) + 1 : 0;
   updateWebTarget($('web-target'), $('web-target-state'), $('web-target-distance'), { started, anchor, position: physics.pos, attached: !!active, anchorNumber });
   if (started && anchor) {
     projected.set(anchor.x, anchor.y, anchor.z).project(camera);
-    const visible = projected.z < 1 && Math.abs(projected.x) < .96 && Math.abs(projected.y) < .9;
+    const occluded = cameraClearance(camera.position, anchor, city.buildings) < 1;
+    $('anchor-marker').classList.toggle('occluded', occluded);
+    const visible = projected.z > -1 && projected.z < 1 && Math.abs(projected.x) < .96 && Math.abs(projected.y) < .9;
     $('anchor-marker').classList.toggle('hidden', !visible);
-    if (visible) { $('anchor-marker').style.left = `${(projected.x * .5 + .5) * 100}%`; $('anchor-marker').style.top = `${(-projected.y * .5 + .5) * 100}%`; $('anchor-label').textContent = active ? `Stretch ${(physics.stretch || 0).toFixed(1)} m` : `Ledge ${anchorNumber}`; }
+    if (visible) { $('anchor-marker').style.left = `${(projected.x * .5 + .5) * 100}%`; $('anchor-marker').style.top = `${(-projected.y * .5 + .5) * 100}%`; $('anchor-label').textContent = active ? `Stretch ${(physics.stretch || 0).toFixed(1)} m` : `Ledge ${anchorNumber}`; if (occluded) $('anchor-label').textContent += ' · Behind building'; }
   } else $('anchor-marker').classList.add('hidden');
   if (running && city.route[checkpoint]) { $('checkpoint-distance').textContent = `${Math.round(horsePosition.distanceTo(city.route[checkpoint]))} m`; }
   const district = physics.pos.z < -650 ? 'Herald Square' : physics.pos.z < -250 ? 'Midtown South' : 'Midtown West';

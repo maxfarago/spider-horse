@@ -42,3 +42,14 @@ test('rooftop arrows move only on the ground and normalize diagonals', async () 
   assert.ok(diagonal.forward<0 && diagonal.strafe<0);
   assert.deepEqual(rooftopInput(true, held('ArrowUp','ArrowDown','ArrowRight','ArrowLeft')), {forward:0,strafe:0});
 });
+
+
+test('only an intentional pointer-up requests a spring launch', () => {
+  const button = new Surface(), releases = [];
+  const clear = bindHold(button, { enabled: () => true, press: () => {}, release: value => releases.push(value) });
+  button.pointer('pointerdown', 1); button.pointer('pointerup', 1);
+  button.pointer('lostpointercapture', 1);
+  button.pointer('pointerdown', 2); button.pointer('pointercancel', 2);
+  button.pointer('pointerdown', 3); clear();
+  assert.deepEqual(releases, [true, false, false]);
+});
