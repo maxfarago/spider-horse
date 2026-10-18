@@ -120,14 +120,11 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
 
 /* Shared minimal HUD; retain the target diamond without its text label. */
 #live-indicator,#web-target,#anchor-label{display:none!important}
-#select-ledge{display:none}
 #steering-joystick{width:108px;height:108px;border-radius:50%;border:1px solid #fff7;background:#182c3166;display:grid;place-items:center;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #joystick-thumb{width:46px;height:46px;border-radius:50%;background:#faf4e8dd;border:1px solid #fff9;box-shadow:0 4px 18px #0003;pointer-events:none}
 @media(max-width:760px),(pointer:coarse){
   .playing #mobile-controls{display:block!important;position:absolute;width:108px;height:108px;z-index:20;left:max(16px,env(safe-area-inset-left))!important;right:auto!important;bottom:max(24px,env(safe-area-inset-bottom))!important}
   .playing #shoot-web{display:flex;right:max(18px,env(safe-area-inset-right));bottom:max(24px,env(safe-area-inset-bottom));width:96px;height:96px}
-  .playing #select-ledge{display:flex;position:absolute;right:calc(max(18px,env(safe-area-inset-right)) + 108px);bottom:max(32px,env(safe-area-inset-bottom));width:72px;height:72px;align-items:center;justify-content:center;flex-direction:column;gap:2px;border-radius:50%;border:1px solid #fff9;background:#faf4e8e8;color:#344738;touch-action:manipulation;user-select:none;-webkit-user-select:none}
-  #select-ledge>span{font-size:28px;line-height:1}#select-ledge strong{font-size:12px;font-weight:600}
 }
 
 /* Local development telemetry; enable remotely with ?debug=1. */
@@ -137,5 +134,11 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
 #debug-phase{font-weight:bold;margin:5px 0}.debug-track{position:relative;height:8px;background:linear-gradient(90deg,#7da1b8,#e7cd8e);border-radius:4px;margin:8px 0}
 #debug-angle{position:absolute;top:-3px;width:4px;height:14px;background:white;border-radius:2px;transform:translateX(-50%)}
 .debug-scale{font-size:9px;color:#b5c5ce}#debug-detail{margin-top:8px}#debug-snap{margin-top:5px;color:#e7cd8e}
-#swing-debug[data-ready="true"]{border-color:#7cfcba;box-shadow:0 0 18px #7cfcba35}#swing-debug[data-ready="true"] #debug-phase{color:#7cfcba}
 @media(max-width:760px){#swing-debug{top:76px;width:250px;padding:8px 12px}}
+
+/* Separate traversal actions: hold Swing, tap Jump, or zip to the point marker. */
+#world{touch-action:none}
+#jump-action{display:none}
+@media(max-width:760px),(pointer:coarse){
+ .playing #jump-action{display:block;position:absolute;z-index:20;right:calc(max(18px,env(safe-area-inset-right)) + 108px);bottom:max(32px,env(safe-area-inset-bottom));width:72px;height:72px;border-radius:32px;border:1px solid #fff9;background:#faf4e8e8;color:#344738;font-weight:600;touch-action:manipulation}
+}

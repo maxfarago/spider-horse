@@ -10,7 +10,7 @@ export function traversalFeel(physics, reduceMotion = false) {
   const swing = attached ? 1 - catchWeight : 0;
   const wallRun = active && !!physics.wallRun ? 1 : 0;
   const vault = active ? Math.max(0, Math.min(1, ((physics.vaultUntil ?? -Infinity) - physics.time) / .45)) : 0;
-  const phase = wallRun ? 'wall-run' : vault > 0 ? 'vault' : !active ? 'grounded' : catchWeight > 0 ? 'catch' : attached ? 'swing' : release > 0 ? 'release' : soar > 0 ? 'soar' : 'air';
+  const phase = physics.pointZip ? 'point-zip' : wallRun ? 'wall-run' : vault > 0 ? 'vault' : !active ? 'grounded' : catchWeight > 0 ? 'catch' : attached ? 'swing' : release > 0 ? 'release' : soar > 0 ? 'soar' : 'air';
   const motion = reduceMotion ? 0 : 1;
   return {
     phase, catch: catchWeight, swing, release, soar, wallRun, vault,

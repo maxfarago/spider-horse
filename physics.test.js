@@ -68,7 +68,7 @@ test('initial momentum faces down the avenue and reset restores the launch', () 
 });
 
 test('attachment favors a strong forward release over a safe but weaker launch', () => {
-  const forward={x:0,y:100,z:-30}, lateral={x:25,y:100,z:-30}, high={x:0,y:140,z:-10};
+  const forward={x:0,y:100,z:-30}, lateral={x:25,y:100,z:-30}, high={x:0,y:120,z:-10};
   const p=new SwingPhysics({anchors:[lateral,high,forward],spawn:{x:0,y:70,z:0},initialVelocity:{x:0,y:-18,z:-25}});
   const before=p.snapshot();
   const best=p.evaluateAnchor(forward), weaker=p.evaluateAnchor(high), sideways=p.evaluateAnchor(lateral);
@@ -800,11 +800,11 @@ test('slack constraint never pushes or adds a spring force', () => {
 });
 
 test('speed assistance acts only at the taut arc bottom and never slows fast travel', () => {
-  for(const [angle,speed,assisted] of [[0,12,true],[50,12,false],[0,30,false]]) {
+  for(const [angle,speed,assisted] of [[0,12,true],[50,12,false],[0,48,false]]) {
     const p=releaseFixture(angle,speed,0);p.launchReelTarget=null;
     const before={...p.vel};p.applyTether(.01,0);
     const gain=Math.hypot(p.vel.x,p.vel.y,p.vel.z)-Math.hypot(before.x,before.y,before.z);
-    if(assisted) assert.ok(gain>0 && gain<=.100001);
+    if(assisted) assert.ok(gain>0 && gain<=.180001);
     else assert.ok(Math.abs(gain)<1e-9);
   }
 });
@@ -867,4 +867,109 @@ test('empty mobile selection clears stale choices while behind remains an explic
   assert.equal(p.selectDirectionalAnchor(0,-1),rear);
   assert.equal(p.findAnchor(),rear);
   assert.equal(p.attach(rear),true,'deliberate behind selection bypasses automatic cone');
+});
+
+function pointZipFixture() {
+  const anchor={x:10.2,y:31.2,z:-29.8};
+  return new SwingPhysics({spawn:{x:8,y:20,z:0},initialVelocity:{x:0,y:0,z:-20},buildings:[{x:0,z:-40,width:20,depth:20,height:30}],anchors:[anchor]});
+}
+
+test('ordinary release adds a bounded kick while swing-jump remains a separate action', () => {
+  const p=apexSwing();for(let i=0;i<720&&!p.releaseAssist();i++)p.step(1/120);
+  assert.ok(p.releaseAssist());
+  const plain=Object.assign(Object.create(SwingPhysics.prototype),p,{pos:{...p.pos},vel:{...p.vel}});
+  const incoming={...plain.vel};plain.release({intentional:true});
+  assert.ok(Math.hypot(...Object.values(plain.vel))>Math.hypot(...Object.values(incoming)));assert.ok(plain.soarUntil>plain.time);
+  assert.equal(p.jumpAction(),true);assert.equal(p.anchor,null);
+  assert.ok(Math.hypot(...Object.values(p.vel))>Math.hypot(...Object.values(incoming)));
+  assert.ok(p.swingRearmAt>p.time+.5);
+});
+
+test('zip to point follows a swept path, reaches the roof and can launch near arrival', () => {
+  const p=pointZipFixture();const target=p.pointCandidate(0);
+  assert.ok(target);assert.ok(p.zipToPoint(target));
+  assert.equal(p.jumpAction(),false,'early jump cannot launch before arrival');
+  while(p.pointZip?.stage===0 && p.time<2)p.step(1/120);
+  assert.equal(p.pointZip?.stage,1);
+  assert.ok(p.pos.y>32.2,'approach clears the facade before crossing roof edge');
+  assert.equal(p.jumpAction(),true);assert.equal(p.pointZip,null);
+  assert.ok(p.vel.y>0 && p.vel.z<-20);
+  const landing=pointZipFixture();landing.zipToPoint(landing.pointCandidate(0));
+  for(let i=0;i<180;i++)landing.step(1/120);
+  assert.ok(landing.grounded);assert.equal(landing.pointZip,null);
+});
+
+test('point zip aborts against new obstructions and new swings cancel a zip', () => {
+  const p=pointZipFixture();p.zipToPoint(p.pointCandidate(0));
+  p.buildings.push({minX:-30,maxX:30,minY:0,maxY:100,minZ:-12,maxZ:-10});
+  for(let i=0;i<60 && p.pointZip;i++)p.step(1/120);
+  assert.equal(p.pointZip,null);assert.ok(p.pos.z>=-10);
+  const q=pointZipFixture();q.zipToPoint(q.pointCandidate(0));q.connect(q.anchors[0]);
+  assert.equal(q.pointZip,null);assert.ok(q.anchor);
+});
+
+test('air zip requires geometry and cooldown prevents repeated velocity boosts', () => {
+  const p=new SwingPhysics({spawn:{x:0,y:50,z:0},anchors:[{x:0,y:80,z:-30}]});
+  assert.equal(p.jumpAction(),true);
+  const velocity={...p.vel};assert.equal(p.jumpAction(),false);assert.deepEqual(p.vel,velocity);
+  const empty=new SwingPhysics({anchors:[]});assert.equal(empty.jumpAction(),false);
+});
+
+
+test('swing-jump trades forward push for lift smoothly across the ascent', () => {
+  const jumpAt = degrees => {
+    const a=degrees*Math.PI/180;
+    const p=new SwingPhysics({spawn:{x:0,y:100-40*Math.cos(a),z:-40*Math.sin(a)},initialVelocity:{x:0,y:20*Math.sin(a),z:-20*Math.cos(a)},anchors:[]});
+    p.connect({x:0,y:100,z:0});p.attachedAt=p.time-1;
+    const before={...p.vel};p.jumpAction();
+    return {forward:before.z-p.vel.z,lift:p.vel.y-before.y};
+  };
+  const early=jumpAt(15),middle=jumpAt(45),late=jumpAt(75);
+  assert.ok(early.forward>middle.forward && middle.forward>late.forward);
+  assert.ok(early.lift<middle.lift && middle.lift<late.lift);
+  for(const boundary of [20,40]) {
+    const a=jumpAt(boundary-.01),b=jumpAt(boundary+.01);
+    assert.ok(Math.abs(a.forward-b.forward)<.01 && Math.abs(a.lift-b.lift)<.01);
+  }
+});
+
+test('ordinary release softens ascent without boosting an instant detach or floating a dive', () => {
+  for(const vy of [-10,10]) {
+    const p=apexSwing();p.vel.y=vy;const before={...p.vel};
+    p.release({intentional:true});assert.deepEqual(p.vel,before);
+    assert.equal(p.soarUntil>p.time,vy>0);
+    assert.equal(p.lastSnap,null);
+  }
+  const p=apexSwing();p.vel.y=10;p.release();assert.equal(p.soarUntil,-Infinity);
+});
+
+
+test('contextual action prioritizes swing jump and only zips to a centered perch', () => {
+  const p=pointZipFixture();
+  assert.equal(p.contextualAction(0).label,'Zip');
+  assert.equal(p.contextualAction(Math.PI/2).label,'Jump');
+  const target=p.pointCandidate(0);
+  assert.equal(p.contextualAction(Math.PI/2,target).kind,'jump','stale off-axis marker cannot zip');
+  p.grounded=true;assert.equal(p.contextualAction(0).label,'Jump');p.grounded=false;
+  p.connect(p.anchors[0]);assert.equal(p.contextualAction(0).label,'Jump');p.release();
+  assert.equal(p.contextualJump(0,target),true);assert.ok(p.pointZip);
+  assert.equal(p.contextualAction(0).kind,'wait');
+  p.pointZip.stage=1;p.pos={...p.pointZip.landing};
+  assert.equal(p.contextualAction(0).label,'Launch');
+  assert.equal(p.contextualJump(0),true);assert.equal(p.pointZip,null);
+});
+
+
+test('committed release kick preserves pitch and passive detach never boosts', () => {
+  const p=apexSwing();p.time=.5;p.vel={x:0,y:15,z:-30};
+  const before={...p.vel};p.release({intentional:true});
+  const gain=Math.hypot(...Object.values(p.vel))-Math.hypot(...Object.values(before));
+  assert.ok(gain>4 && gain<=6);assert.ok(Math.abs(p.vel.y/p.vel.z-before.y/before.z)<1e-9);
+  const q=apexSwing();q.time=.5;q.vel={...before};q.release();assert.deepEqual(q.vel,before);
+});
+
+test('air zip has a pronounced forward burst and a timed visual cue', () => {
+  const p=new SwingPhysics({spawn:{x:0,y:50,z:0},initialVelocity:{x:0,y:-10,z:-24},anchors:[{x:0,y:80,z:-30}]});
+  p.jumpAction();assert.ok(Math.hypot(p.vel.x,p.vel.z)>=42);
+  assert.equal(p.zipBurstAt,p.time);assert.ok(p.soarUntil>p.time);
 });

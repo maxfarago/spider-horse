@@ -108,6 +108,12 @@ export class SwingPhysics {
     this.soarUntil = -Infinity;
     this.catchForwardX = 0; this.catchForwardZ = -1;
     this.catchLength = 0;
+    this.swingRearmAt = Infinity;
+    this.pointZip = null;
+    this.pointLaunchUntil = -Infinity;
+    this.airZipUntil = -Infinity;
+    this.zipBurstAt = -Infinity;
+    this.pointLaunchDirection = { x:0, z:-1 };
     this.wallRun = null;
     this.wallRecoveryUntil = -Infinity;
     this.vaultUntil = -Infinity;
@@ -157,7 +163,7 @@ export class SwingPhysics {
       blocked ||= obstacles.some(box => sweepBox(preview.pos, delta, box));
       if (blocked) break;
       if (preview.releaseAssist() > 0) {
-        preview.release({ launch: true });
+        preview.jumpAction();
         const horizontal = Math.hypot(preview.vel.x, preview.vel.z);
         release = {
           velocity: copy(preview.vel), position: copy(preview.pos), time: preview.time - this.time,
@@ -296,6 +302,8 @@ export class SwingPhysics {
 
   connect(candidate) {
     if (this.lost || this.anchor) return;
+    this.swingRearmAt = Infinity;
+    this.pointZip = null; this.pointLaunchUntil = -Infinity;
     this.heldAttachmentSpent = true;
     this.anchor = { ...candidate };
     const distance = Math.hypot(this.pos.x - candidate.x, this.pos.y - candidate.y, this.pos.z - candidate.z);
@@ -326,7 +334,7 @@ export class SwingPhysics {
   }
 
   releaseAssist() {
-    // Reward the ascending arc, not the height apex where upward speed is gone.
+    // Representative early launch sample for anchor ranking (not a player timing gate).
     if (!this.anchor || this.vel.y < 3 || this.time - this.attachedAt < .2) return 0;
     const state = this.updateTetherState();
     const angle = Math.atan2(Math.hypot(state.radial.x, state.radial.z), -state.radial.y);
@@ -338,12 +346,12 @@ export class SwingPhysics {
   swingTelemetry() {
     const ready = !!this.anchor && !this.lost && !this.grounded && this.time - this.attachedAt >= .12 && this.releaseAssist() > 0;
     const angle = this.anchor ? Math.atan2(Math.hypot(this.pos.x - this.anchor.x, this.pos.z - this.anchor.z), this.anchor.y - this.pos.y) * 180 / Math.PI : null;
-    const phase = !this.anchor ? (this.time < this.soarUntil ? 'Soaring' : 'Detached') : ready ? 'Release now · SNAP' : this.vel.y > 1 ? 'Rising' : this.vel.y < -1 ? 'Descending' : 'Turning';
+    const phase = !this.anchor ? (this.time < this.soarUntil ? 'Soaring' : 'Detached') : this.vel.y > 1 ? 'Rising' : this.vel.y < -1 ? 'Descending' : 'Turning';
     return { ready, angle, phase, speed: length(this.vel), verticalSpeed: this.vel.y, lastSnap: this.lastSnap };
   }
 
-  release({ launch = false } = {}) {
-    if (!launch) { this.soarUntil = -Infinity; this.releasedAt = -Infinity; }
+  release({ launch = false, intentional = false, boosted = true } = {}) {
+    if (!launch) { this.swingRearmAt = Infinity; this.soarUntil = -Infinity; this.releasedAt = -Infinity; }
     if (launch && this.anchor && !this.lost && !this.grounded && this.time - this.attachedAt >= .12) {
       this.releasedAt = this.time;
       const snap = this.releaseAssist();
@@ -357,6 +365,19 @@ export class SwingPhysics {
         this.soarUntil = this.time + .65;
         this.lastSnap = { time: this.time, before: speedBefore, after: length(this.vel), gain: length(this.vel) - speedBefore };
       }
+    }
+    if (intentional && this.anchor && !this.lost && !this.grounded) {
+      this.releasedAt = this.time;
+      // A bounded kick along the existing trajectory rewards a committed swing.
+      if (boosted && this.time - this.attachedAt >= .3 && this.vel.y >= 0) {
+        const speed = length(this.vel);
+        if (speed > 8) {
+          const factor = (speed + Math.min(6, speed * .15)) / speed;
+          this.vel.x *= factor; this.vel.y *= factor; this.vel.z *= factor;
+          this.limitSpeed();
+        }
+      }
+      if (this.vel.y >= 0) this.soarUntil = this.time + .85;
     }
     const wasAttached = this.anchor !== null;
     if (this.anchor) {
@@ -374,9 +395,10 @@ export class SwingPhysics {
   }
 
   maintainHeldSwing(candidate = undefined) {
+    if (this.time >= this.swingRearmAt) { this.heldAttachmentSpent = false; this.swingRearmAt = Infinity; }
     // Retry only the initial catch. A held cord never transfers to a new roof,
     // including after a collision breaks it; the player must release first.
-    if (this.wallRun || this.time < this.vaultUntil || this.anchor || this.heldAttachmentSpent || this.time < this.nextAnchorCheck) return;
+    if (this.pointZip || this.wallRun || this.time < this.vaultUntil || this.anchor || this.heldAttachmentSpent || this.time < this.nextAnchorCheck) return;
     this.nextAnchorCheck = this.time + 0.12;
     this.attach(candidate);
   }
@@ -410,19 +432,131 @@ export class SwingPhysics {
     const state = this.updateTetherState();
     if (!state || state.distance < 1e-6) return;
     const below = -state.radial.y / state.distance;
-    // Assist only within 25 degrees of the bottom and only while taut.
-    if (below > Math.cos(25 * Math.PI / 180) && state.distance >= this.ropeLength - .1 && this.time - this.attachedAt >= .18) {
+    // Assist only within 35 degrees of the bottom and only while taut.
+    if (below > Math.cos(35 * Math.PI / 180) && state.distance >= this.ropeLength - .1 && this.time - this.attachedAt >= .18) {
       const radialForward = (this.catchForwardX * state.radial.x + this.catchForwardZ * state.radial.z) / state.distance ** 2;
       const tangent = { x: this.catchForwardX - state.radial.x * radialForward, y: -state.radial.y * radialForward, z: this.catchForwardZ - state.radial.z * radialForward };
       const magnitude = length(tangent);
       if (magnitude > .2) {
         const along = dot(this.vel, tangent) / magnitude;
-        const assist = along >= 0 ? Math.min(10 * dt, Math.max(0, 24 - along)) : 0;
+        const assist = along >= 0 ? Math.min(18 * dt, Math.max(0, 38 - along)) : 0;
         this.vel.x += tangent.x / magnitude * assist;
         this.vel.y += tangent.y / magnitude * assist;
         this.vel.z += tangent.z / magnitude * assist;
       }
     }
+  }
+
+  contextualAction(yaw, candidate = undefined) {
+    const near = this.pointZip && this.pointZip.stage === 1 && length({x:this.pos.x-this.pointZip.landing.x,y:this.pos.y-this.pointZip.landing.y,z:this.pos.z-this.pointZip.landing.z}) < 8;
+    if (near || this.time <= this.pointLaunchUntil) return {label:'Launch', kind:'jump'};
+    if (this.pointZip) return {label:'Zip', kind:'wait'};
+    if (this.anchor || this.grounded) return {label:'Jump', kind:'jump'};
+    const target = candidate === undefined ? this.pointCandidate(yaw) : candidate && this.pointCandidate(yaw, candidate.anchor);
+    return target ? {label:'Zip', kind:'perch', target} : {label:'Jump', kind:'jump'};
+  }
+
+  contextualJump(yaw, candidate = undefined) {
+    const action = this.contextualAction(yaw, candidate);
+    if (action.kind === 'wait') return false;
+    if (action.kind === 'perch') return this.zipToPoint(action.target);
+    return this.jumpAction();
+  }
+
+  pointCandidate(yaw, onlyAnchor = null) {
+    let best=null, bestScore=-Infinity;
+    for (const anchor of this.anchors) {
+      if (onlyAnchor && anchor !== onlyAnchor) continue;
+      const alignment=this.viewAlignment(anchor,yaw);
+      if(alignment<Math.cos(Math.PI/15))continue;
+      const box=this.buildings.find(b=>Math.abs(anchor.y-b.maxY)<3 && anchor.x>=b.minX-1 && anchor.x<=b.maxX+1 && anchor.z>=b.minZ-1 && anchor.z<=b.maxZ+1);
+      if(!box)continue;
+      const xSide=anchor.x<(box.minX+box.maxX)/2 ? -1 : 1;
+      const zSide=anchor.z<(box.minZ+box.maxZ)/2 ? -1 : 1;
+      const staging={x:xSide<0?box.minX-.5:box.maxX+.5,y:box.maxY+3,z:zSide<0?box.minZ-.5:box.maxZ+.5};
+      const delta={x:staging.x-this.pos.x,y:staging.y-this.pos.y,z:staging.z-this.pos.z};
+      const distance=length(delta);
+      if(Math.abs(delta.y)>Math.hypot(delta.x,delta.z)*.75 || distance<5 || distance>65 || this.buildings.some(b=>sweepBox(this.pos,delta,b)))continue;
+      const landing={x:clamp(anchor.x,box.minX+2,box.maxX-2),y:box.maxY+3,z:clamp(anchor.z,box.minZ+2,box.maxZ-2)};
+      const score=alignment*100-distance*.5;
+      if(score>bestScore){bestScore=score;best={anchor,staging,landing};}
+    }
+    return best;
+  }
+
+  zipToPoint(candidate) {
+    if(this.lost || this.pointZip || !candidate)return false;
+    // Validate against current geometry, not a stale marker or caller-provided path.
+    const yaw=Math.atan2(-(candidate.anchor.x-this.pos.x),-(candidate.anchor.z-this.pos.z));
+    const current=this.pointCandidate(yaw,candidate.anchor);
+    if(!current || current.anchor!==candidate.anchor)return false;
+    this.release(); this.wallRun=null; this.vaultUntil=-Infinity;
+    const dx=current.landing.x-this.pos.x,dz=current.landing.z-this.pos.z,n=Math.hypot(dx,dz)||1;
+    this.pointLaunchDirection={x:dx/n,z:dz/n};
+    this.pointZip={...current,stage:0,until:this.time+2.5};
+    this.zipBurstAt=this.time;
+    this.pointLaunchUntil=-Infinity; this.heldAttachmentSpent=true; this.grounded=false;
+    return true;
+  }
+
+  pointLaunch() {
+    const near=this.pointZip && this.pointZip.stage===1 && Math.hypot(this.pos.x-this.pointZip.landing.x,this.pos.y-this.pointZip.landing.y,this.pos.z-this.pointZip.landing.z)<8;
+    if(this.lost || (!near && this.time>this.pointLaunchUntil))return false;
+    this.pointZip=null; this.pointLaunchUntil=-Infinity; this.grounded=false;
+    this.vel={x:this.pointLaunchDirection.x*32,y:15,z:this.pointLaunchDirection.z*32};
+    this.releasedAt=this.time; this.soarUntil=this.time+.45;
+    return true;
+  }
+
+  jumpAction() {
+    if(this.lost)return false;
+    if(this.pointLaunch())return true;
+    if(this.pointZip)return false;
+    if(this.grounded)return this.jump();
+    if(this.anchor) {
+      const before = length(this.vel);
+      const horizontal = Math.hypot(this.vel.x, this.vel.z);
+      const angle = Math.atan2(Math.hypot(this.pos.x-this.anchor.x, this.pos.z-this.anchor.z), this.anchor.y-this.pos.y);
+      // A continuous speed/height tradeoff across the ascent, not a timing gate.
+      const ascent = clamp(this.vel.y / 3, 0, 1);
+      const progress = clamp(angle / (Math.PI / 2), 0, 1);
+      const heightBias = progress * progress * (3 - 2 * progress) * ascent;
+      const forwardPush = 7 - 5 * heightBias;
+      const lift = 3 + 6 * heightBias;
+      const dx = horizontal > 1 ? this.vel.x / horizontal : this.catchForwardX;
+      const dz = horizontal > 1 ? this.vel.z / horizontal : this.catchForwardZ;
+      this.release({intentional:true, boosted:false});
+      this.vel.x += dx * forwardPush; this.vel.z += dz * forwardPush;
+      this.vel.y += lift;
+      this.limitSpeed();
+      this.lastSnap = {time:this.time, before, after:length(this.vel), gain:length(this.vel)-before};
+      this.releasedAt=this.time; this.heldAttachmentSpent=true; this.swingRearmAt=this.time+.55;
+      return true;
+    }
+    // A short forward web zip needs geometry and cannot be spammed for flight.
+    if(this.time<this.airZipUntil || !this.findAnchor())return false;
+    const speed=Math.min(72, Math.max(42, Math.hypot(this.vel.x,this.vel.z)+18));
+    this.vel.x=-Math.sin(this.viewYaw)*speed;this.vel.z=-Math.cos(this.viewYaw)*speed;
+    this.vel.y=Math.max(this.vel.y,-2);this.airZipUntil=this.time+.8;
+    this.releasedAt=this.time;this.zipBurstAt=this.time;this.soarUntil=this.time+.7;this.limitSpeed();return true;
+  }
+
+  updatePointZip(dt) {
+    const zip=this.pointZip;
+    if(!zip)return false;
+    if(this.time>zip.until){this.pointZip=null;return false;}
+    let target=zip.stage===0?zip.staging:zip.landing;
+    let delta={x:target.x-this.pos.x,y:target.y-this.pos.y,z:target.z-this.pos.z};
+    let distance=length(delta);
+    if(distance<.4) {
+      if(zip.stage===0){this.pointZip={...zip,stage:1};return true;}
+      this.pointZip=null;this.pointLaunchUntil=this.time+.2;this.vel={x:0,y:0,z:0};return true;
+    }
+    const speed=Math.min(68,distance/dt);
+    this.vel={x:delta.x/distance*speed,y:delta.y/distance*speed,z:delta.z/distance*speed};
+    const collided=this.move({x:this.vel.x*dt,y:this.vel.y*dt,z:this.vel.z*dt});
+    if(collided){this.pointZip=null;this.pointLaunchUntil=-Infinity;}
+    return true;
   }
 
   jump() {
@@ -477,6 +611,13 @@ export class SwingPhysics {
   integrate(dt, input) {
     this.time += dt;
     this.yaw += input.turn * dt * 1.5;
+    if(this.pointZip) {
+      const before=copy(this.pos);
+      if(this.updatePointZip(dt)) {
+        this.distanceTravelled+=Math.hypot(this.pos.x-before.x,this.pos.z-before.z);
+        this.resolveGround();this.enforceBounds();return;
+      }
+    }
     if (input.swingHeld) this.maintainHeldSwing(input.swingTarget);
     else this.heldAttachmentSpent = false;
     const sin = Math.sin(this.yaw);
@@ -736,7 +877,7 @@ export class SwingPhysics {
       pos: copy(this.pos),
       vel: copy(this.vel),
       yaw: this.yaw,
-      traversalPhase: this.grounded ? 'grounded' : this.wallRun ? 'wall-run' : this.time < this.vaultUntil ? 'vault' : this.anchor ? (this.time - this.attachedAt < .18 ? 'catch' : 'swing') : this.time < this.soarUntil ? 'soar' : 'air',
+      traversalPhase: this.pointZip ? 'point-zip' : this.grounded ? 'grounded' : this.wallRun ? 'wall-run' : this.time < this.vaultUntil ? 'vault' : this.anchor ? (this.time - this.attachedAt < .18 ? 'catch' : 'swing') : this.time < this.soarUntil ? 'soar' : 'air',
       grounded: this.grounded,
       lost: this.lost,
       anchor: this.anchor ? { ...this.anchor } : null,

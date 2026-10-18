@@ -90,3 +90,23 @@ test('joystick tracks one finger, ignores unrelated touches and resets on cancel
   assert.equal(values.length,count);
   assert.ok(panView(0,()=>false,.1,.5)<0,'right joystick pans right');
 });
+
+
+test('travel intent follows momentum and steering independently of the camera', async () => {
+  const {travelIntent}=await import('./controls.js');
+  const velocity={x:0,y:12,z:-30};
+  assert.equal(travelIntent(velocity,Math.PI,0),0);
+  assert.equal(travelIntent(velocity,Math.PI,1),.4);
+  assert.equal(travelIntent(velocity,Math.PI,-1),-.4);
+  assert.equal(travelIntent({x:0,z:0},1,0),1);
+});
+
+test('camera look tracks one pointer independently and stops on cleanup', async () => {
+  const {bindLook}=await import('./controls.js');
+  const surface=new Surface(), moves=[];
+  const clear=bindLook(surface,{enabled:()=>true,change:(x,y)=>moves.push([x,y])});
+  const send=(type,id,x,y)=>{const event=new Event(type,{cancelable:true});Object.assign(event,{pointerId:id,pointerType:'touch',button:0,clientX:x,clientY:y});surface.dispatchEvent(event);};
+  send('pointerdown',1,10,10);send('pointermove',2,40,40);send('pointermove',1,20,15);
+  assert.deepEqual(moves,[[10,5]]);
+  clear();send('pointermove',1,30,30);assert.equal(moves.length,1);
+});
