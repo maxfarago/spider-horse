@@ -41,7 +41,7 @@ test('even a soft street contact loses, before a rope constraint can rescue the 
   assert.equal(roof.grounded, true);
 });
 
-test('bungee delivers repeated strong rebounds rather than settling after one catch', () => {
+test('elastic catch settles into a limited-extension swing', () => {
   const physics = new SwingPhysics({ spawn: { x: 0, y: 90, z: 0 }, initialVelocity: { x: 0, y: -20, z: 0 } });
   physics.connect({ x: 0, y: 150, z: 0 });
   physics.launchReelTarget = null;
@@ -52,8 +52,9 @@ test('bungee delivers repeated strong rebounds rather than settling after one ca
     if (physics.vel.y > 10 && !wasRising) { rebounds++; wasRising = true; }
     if (physics.vel.y < 0) wasRising = false;
   }
-  assert.ok(stretch > 6, `only ${stretch}m extension`);
-  assert.ok(rebounds >= 2, `only ${rebounds} strong rebounds`);
+  assert.ok(stretch > 0 && stretch <= 1.2, `bounded catch extension: ${stretch}m`);
+  assert.ok(physics.stretch <= 1.5 + 1e-7, 'settled arc has limited extension');
+  assert.ok(physics.ropeLength <= physics.catchLength, 'controller never lengthens the arc');
 });
 
 test('initial momentum faces down the avenue and reset restores the launch', () => {
@@ -66,19 +67,20 @@ test('initial momentum faces down the avenue and reset restores the launch', () 
   assert.equal(physics.energy, 1);
 });
 
-test('attachment favors a flowing elevated swing over a closer low or rear ledge', () => {
-  const rear = { x: 0, y: 60, z: 55 };
-  const ahead = { x: 15, y: 70, z: 10 };
-  const low = { x: 0, y: 40, z: 30 };
-  const physics = new SwingPhysics({ anchors: [rear, low, ahead] });
-  assert.equal(physics.attach(), true);
-  assert.deepEqual(physics.anchor, ahead);
-  physics.yaw = Math.PI;
-  assert.deepEqual(physics.findAnchor(), ahead);
-  assert.equal(physics.attach(), true);
+test('attachment favors a strong forward release over a safe but weaker launch', () => {
+  const forward={x:0,y:100,z:-30}, lateral={x:25,y:100,z:-30}, high={x:0,y:140,z:-10};
+  const p=new SwingPhysics({anchors:[lateral,high,forward],spawn:{x:0,y:70,z:0},initialVelocity:{x:0,y:-18,z:-25}});
+  const before=p.snapshot();
+  const best=p.evaluateAnchor(forward), weaker=p.evaluateAnchor(high), sideways=p.evaluateAnchor(lateral);
+  assert.ok(best.release.forwardSpeed>weaker.release.forwardSpeed);
+  assert.ok(best.score>weaker.score && best.score>sideways.score);
+  assert.ok(sideways.release.lateralSpeed>20);
+  assert.deepEqual(p.snapshot(),before,'predictions never mutate gameplay');
+  assert.equal(p.findAnchor(),forward);
+  assert.equal(p.attach(),true);assert.deepEqual(p.anchor,forward);
 });
 
-test('elastic tether extends under load, recoils, and retains tangential swing', () => {
+test('rope constraint settles after catch and retains the pendulum arc', () => {
   const physics = new SwingPhysics({ anchors: [{ x: 0, y: 100, z: 0 }], spawn: { x: 0, y: 60, z: 25 } });
   physics.attach();
   physics.vel = { x: 0, y: -14, z: 0 };
@@ -97,8 +99,8 @@ test('elastic tether extends under load, recoils, and retains tangential swing',
     previousStretch = physics.stretch;
     assert.ok(physics.tension >= 0 && physics.tension <= 1);
   }
-  assert.ok(peakStretch > 3, 'spring visibly stretches, unlike a rigid rope');
-  assert.ok(recoiled, 'stored spring energy returns into upwards movement');
+  assert.ok(peakStretch <= 1.2 + 1e-7, 'compliance is brief and bounded');
+  assert.ok(physics.stretch < 1e-6, 'settled rope does not stretch');
   assert.ok(swung, 'radial spring force preserves the pendulum arc');
 });
 
@@ -279,17 +281,15 @@ test('new airborne attachment preserves velocity and release preserves spring re
   assert.equal(physics.attachmentCount, attachments);
 });
 
-test('spring damping dissipates unpowered energy instead of amplifying each oscillation', () => {
-  const physics = new SwingPhysics({ anchors: [{ x: 0, y: 100, z: 0 }], spawn: { x: 0, y: 60, z: 25 } });
-  physics.attach();
-  const energy = () => 25 * physics.pos.y + 0.5 * physics.snapshot().speed ** 2 + 0.5 * 17 * physics.stretch ** 2;
-  const initialEnergy = energy();
-  for (let frame = 0; frame < 3600; frame += 1) {
-    physics.step(1 / 120);
-    assert.ok(energy() < initialEnergy * 1.02, 'unpowered rope cannot create energy');
+test('bottom assistance remains bounded through repeated swings', () => {
+  const p=new SwingPhysics({spawn:{x:0,y:60,z:25}});p.connect({x:0,y:100,z:0});
+  p.launchReelTarget=null;
+  for(let i=0;i<3600;i++) {
+    p.step(1/120);
+    assert.ok(Math.hypot(p.vel.x,p.vel.y,p.vel.z)<=78+1e-8);
+    assert.ok(p.stretch<=1.2+1e-7);
   }
-  assert.ok(energy() < initialEnergy * 0.92);
-  assert.equal(physics.attachmentCount, 1);
+  assert.equal(p.attachmentCount,1);
 });
 
 test('30, 60 and 120 FPS produce the same fixed-anchor spring trajectory', () => {
@@ -371,7 +371,8 @@ test('arrow cycling wraps ranked choices and never silently transfers an attache
   const anchors = [{x:0,y:60,z:55},{x:20,y:65,z:50},{x:30,y:80,z:40}];
   const p = new SwingPhysics({anchors});
   const choices = p.selectableAnchors();
-  assert.equal(p.findAnchor(), choices[0]);
+  assert.equal(p.findAnchor(), choices.find(a=>p.isForwardAnchor(a)) || null);
+  p.selectedAnchor=choices[0];
   assert.equal(p.selectAnchor(1), choices[1]);
   assert.equal(p.findAnchor(), choices[1]);
   assert.equal(p.selectAnchor(1), choices[2]);
@@ -412,14 +413,16 @@ test('up/down rank their own hemisphere, including points outside the top five',
   assert.equal(p.selectedAnchor,chosen);
 });
 
-test('reversing momentum reverses preferred swing without mutating the real simulation', () => {
+test('view direction controls recommendations independently of reversed momentum', () => {
   const front={x:0,y:75,z:-30}, rear={x:0,y:75,z:30};
   const p=new SwingPhysics({spawn:{x:0,y:50,z:0},initialVelocity:{x:0,y:-8,z:-30},anchors:[front,rear]});
   const before=p.snapshot();
   assert.equal(p.findAnchor(),front);
   assert.deepEqual(p.snapshot(),before);
   p.vel.z=30;
-  assert.equal(p.findAnchor(),rear,'velocity change invalidates cached ranking');
+  assert.equal(p.findAnchor(),front,'momentum does not override the view');
+  p.viewYaw=Math.PI;
+  assert.equal(p.findAnchor(),rear,'turning the view invalidates the old lock');
   p.selectDirectionalAnchor(0,1);
   assert.equal(p.findAnchor(),front,'explicit choice is stable despite opposite momentum');
 });
@@ -461,12 +464,13 @@ test('swing forecasts have bounded work and repeated HUD reads reuse the ranking
   SwingPhysics.prototype.integrate = function(...args) { steps++; return integrate.apply(this,args); };
   try {
     p.findAnchor();
-    assert.equal(steps,120,'two candidates use sixty forecast steps each');
+    assert.ok(steps > 0 && steps <= 136,'two candidates stay within their forecast budgets');
+    const firstSteps=steps;
     for(let i=0;i<100;i++) p.findAnchor();
-    assert.equal(steps,120,'HUD/camera reads must not repeat the simulation');
-    p.vel.z = 30;
+    assert.equal(steps,firstSteps,'HUD/camera reads must not repeat the simulation');
+    p.vel.z = 30; p.recommendationUntil = 0;
     p.findAnchor();
-    assert.equal(steps,240,'changed momentum refreshes the forecast');
+    assert.ok(steps>firstSteps && steps<=firstSteps+136,'changed momentum refreshes a bounded forecast');
   } finally {
     SwingPhysics.prototype.integrate = integrate;
   }
@@ -487,7 +491,7 @@ test('release timing preserves horizontal, rising and near-apex swing trajectori
   for (const angle of [0, 35, 75]) {
     const p = releaseFixture(angle), before = { ...p.vel };
     p.release({ launch: true });
-    assert.ok(Math.hypot(p.vel.y, p.vel.z) > Math.hypot(before.y, before.z));
+    assert.ok(Math.hypot(p.vel.y, p.vel.z) >= Math.hypot(before.y, before.z));
     assert.ok(Math.abs(Math.atan2(p.vel.y, -p.vel.z) - angle * Math.PI / 180) < 1e-10);
     assert.equal(p.anchor, null);
     results.push(p.vel);
@@ -497,12 +501,12 @@ test('release timing preserves horizontal, rising and near-apex swing trajectori
   assert.ok(results[2].y > results[1].y && results[1].y > results[0].y);
 });
 
-test('release preserves elastic radial recoil while giving the tangent a bounded assist', () => {
+test('release outside the reward window preserves velocity without manufacturing speed', () => {
   const p = releaseFixture(0);
   p.vel.y = 12;
   p.release({ launch: true });
   assert.equal(p.vel.y, 12);
-  assert.ok(p.vel.z < -35 && p.vel.z >= -45);
+  assert.equal(p.vel.z,-35);
   const outgoing = { ...p.vel }; p.release({ launch: true });
   assert.deepEqual(p.vel, outgoing);
   const falling = releaseFixture(-35); falling.release({ launch: true });
@@ -535,7 +539,7 @@ test('release assists follow three-dimensional momentum and respect the speed ca
 
 
 test('recommendation stays locked briefly and Space attaches to the displayed ledge', () => {
-  const a = {x:0,y:75,z:-25}, b = {x:15,y:75,z:-30};
+  const a = {x:0,y:75,z:-25}, b = {x:0,y:75,z:-30};
   const p = new SwingPhysics({anchors:[a,b],spawn:{x:0,y:50,z:0}});
   let ranked = [a,b]; p.rankedAnchors = () => ranked;
   const displayed = p.findAnchor();
@@ -573,7 +577,9 @@ test('release clears the used manual choice and excludes the previous ledge from
   p.rankedAnchors = () => [used,rear]; p.recommendationUntil = 0;
   assert.equal(p.findAnchor(),null,'no backward fallback when no new forward ledge exists');
   p.vel.z = 20;
-  assert.equal(p.findAnchor(),rear,'forward follows current momentum, not fixed world heading');
+  assert.equal(p.findAnchor(),null,'momentum cannot override the view cone');
+  p.viewYaw = Math.PI;
+  assert.equal(p.findAnchor(),rear,'recommendation follows the view');
   p.reset();
   assert.equal(p.previousAnchor,null);
 });
@@ -583,8 +589,282 @@ test('recommendation unlocks immediately on reversal or loss of range', () => {
   const p = new SwingPhysics({anchors:[a,b],spawn:{x:0,y:50,z:0}});
   p.rankedAnchors = () => [a,b];
   assert.equal(p.findAnchor(),a);
-  p.vel.z = 16;
+  p.viewYaw = Math.PI;
   assert.equal(p.findAnchor(),b);
   p.pos.z = 110;
   assert.equal(p.findAnchor(),null);
+});
+
+test('mobile Select cycles forward-view ledges without attaching or transferring a web', () => {
+  const a={x:0,y:75,z:-25},b={x:20,y:75,z:-35},rear={x:0,y:75,z:25};
+  const p=new SwingPhysics({anchors:[a,b,rear],spawn:{x:0,y:50,z:0}});
+  p.rankedAnchors=()=>[a,rear,b];
+  assert.equal(p.selectNextForwardAnchor(0,a),b);
+  assert.equal(p.anchor,null);
+  assert.equal(p.selectNextForwardAnchor(0,b),a);
+  p.attach(a); const attached={...p.anchor};
+  assert.equal(p.selectNextForwardAnchor(0,a),b);
+  assert.deepEqual(p.anchor,attached);
+  p.release();
+  assert.equal(p.selectNextForwardAnchor(0,b),b,'last used ledge is excluded');
+  assert.equal(p.selectNextForwardAnchor(Math.PI,b),rear,'selection uses the view direction');
+});
+
+
+function apexSwing() {
+  const p = new SwingPhysics({spawn:{x:0,y:70,z:0},initialVelocity:{x:0,y:-18,z:-25},anchors:[]});
+  p.connect({x:0,y:100,z:-30});
+  return p;
+}
+function releaseCopy(p, launch = true, snap = true) {
+  const copy = Object.assign(Object.create(SwingPhysics.prototype), p, {pos:{...p.pos},vel:{...p.vel}});
+  if (!snap) copy.releaseAssist = () => 0;
+  copy.release({launch});
+  return copy;
+}
+
+test('release reward occurs on the early ascending arc and preserves its pitch', () => {
+  const p=apexSwing();let duration=0;
+  for(let i=0;i<600;i++) {
+    p.step(1/120);
+    if(p.releaseAssist()>0) {
+      duration+=1/120;
+      const released=releaseCopy(p), before=Math.hypot(p.vel.x,p.vel.y,p.vel.z);
+      assert.ok(p.vel.y>3);
+      assert.ok(p.swingTelemetry().angle>=20 && p.swingTelemetry().angle<=41);
+      assert.ok(Math.abs(released.lastSnap.gain-3)<1e-6);
+      assert.ok(Math.abs(released.vel.y/(before+3)-p.vel.y/before)<1e-8,'no vertical floor changes release pitch');
+      assert.equal(released.swingTelemetry().ready,false);
+    } else if(duration)break;
+  }
+  assert.ok(duration>.25 && duration<1);
+});
+
+test('snap requires a real ascent, expires after the apex, and never fires on cleanup', () => {
+  const p = apexSwing();
+  assert.equal(p.releaseAssist(),0,'initial fall is not an apex');
+  let sawWindow = false;
+  for (let i=0;i<600;i++) {
+    p.step(1/120);
+    if (p.releaseAssist()>0) {
+      sawWindow=true;
+      assert.deepEqual(releaseCopy(p,false).vel,p.vel,'passive detach preserves velocity');
+      assert.equal(releaseCopy(p,false).lastSnap,null,'cleanup never emits a burst');
+    } else if (sawWindow) break;
+  }
+  assert.ok(sawWindow);
+  assert.equal(p.releaseAssist(),0);
+  p.release(); p.connect({x:10,y:p.pos.y+30,z:p.pos.z-20});
+  assert.equal(p.releaseAssist(),0,'new attachment cannot reuse the previous peak');
+});
+
+test('apex snap timing is consistent across render rates and remains speed limited', () => {
+  const starts=[];
+  for (const fps of [30,60,120]) {
+    const p=apexSwing();
+    for(let i=0;i<fps*6;i++) {
+      p.step(1/fps);
+      if(p.releaseAssist()>0) {
+        starts.push(p.time);
+        p.vel.x=p.catchForwardX*77; p.vel.z=p.catchForwardZ*77;
+        p.release({launch:true});
+        assert.ok(Math.hypot(p.vel.x,p.vel.y,p.vel.z)<=78+1e-9);
+        break;
+      }
+    }
+  }
+  assert.equal(starts.length,3);
+  assert.ok(Math.max(...starts)-Math.min(...starts)<.04);
+});
+
+test('air steering bends momentum symmetrically without manufacturing horizontal speed', () => {
+  const make = () => new SwingPhysics({spawn:{x:0,y:150,z:0},initialVelocity:{x:0,y:5,z:-30}});
+  const left=make(), right=make(), straight=make();
+  for(let i=0;i<60;i++){left.step(1/120,{turn:1});right.step(1/120,{turn:-1});straight.step(1/120);}
+  assert.ok(left.vel.x < -10 && right.vel.x > 10);
+  assert.ok(Math.abs(left.vel.x + right.vel.x)<1e-9);
+  assert.ok(Math.abs(Math.hypot(left.vel.x,left.vel.z)-Math.hypot(straight.vel.x,straight.vel.z))<1e-9);
+});
+
+test('controlled catch preserves entry velocity and bounds stretch after settling while steering', () => {
+  const p=new SwingPhysics({spawn:{x:0,y:70,z:0},initialVelocity:{x:0,y:-18,z:-25}});
+  const incoming={...p.vel};
+  p.connect({x:0,y:100,z:-30});
+  assert.deepEqual(p.vel,incoming);
+  for(let i=0;i<240;i++) {
+    p.step(1/120,{turn:.35});
+    assert.ok(p.anchor,'steering retains the same attachment');
+    if(p.time>.2) assert.ok(p.stretch<=1e-6);
+  }
+  assert.ok(p.ropeLength <= p.catchLength);
+  assert.equal(p.snapshot().traversalPhase,'swing');
+});
+
+test('rising release gives sustained soaring and reattachment or cleanup ends the assist', () => {
+  const p=apexSwing();
+  for(let i=0;i<720 && !p.releaseAssist();i++) p.step(1/120);
+  assert.ok(p.releaseAssist()>0);
+  p.release({launch:true});
+  assert.equal(p.snapshot().traversalPhase,'soar');
+  const height=p.pos.y, horizontal=Math.hypot(p.vel.x,p.vel.z);
+  for(let i=0;i<120;i++) p.step(1/120);
+  assert.ok(p.pos.y>height,'still above release height after one second');
+  assert.ok(Math.hypot(p.vel.x,p.vel.z)>horizontal*.95,'forward speed survives soaring');
+  p.connect({x:0,y:p.pos.y+30,z:p.pos.z-25});
+  assert.equal(p.soarUntil,-Infinity);
+  p.release();
+  assert.equal(p.snapshot().traversalPhase,'air');
+  const falling=apexSwing();falling.release({launch:true});
+  assert.equal(falling.soarUntil,-Infinity,'initial dive is not converted into a soar');
+});
+
+test('soar expires and a wall impact cancels it', () => {
+  const p=apexSwing();
+  for(let i=0;i<720 && !p.releaseAssist();i++) p.step(1/120);
+  p.release({launch:true});
+  const impacted=Object.assign(Object.create(SwingPhysics.prototype),p,{pos:{...p.pos},vel:{x:20,y:12,z:0}});
+  impacted.recordImpact({x:-1,y:0,z:0});
+  assert.equal(impacted.soarUntil,-Infinity);
+  for(let i=0;i<150;i++) p.step(1/120);
+  assert.equal(p.snapshot().traversalPhase,'air');
+});
+
+function wallFixture(height=30, xSpeed=0) {
+  return new SwingPhysics({buildings:[{x:0,z:0,width:80,depth:20,height}],spawn:{x:0,y:24,z:25},initialVelocity:{x:xSpeed,y:0,z:-30}});
+}
+
+test('head-on building impact becomes a wall-run and a swept forward vault', () => {
+  const p=wallFixture();let wall=false,vault=false;
+  for(let i=0;i<210;i++) {
+    p.step(1/120);
+    wall ||= !!p.wallRun;
+    if(p.snapshot().traversalPhase==='vault') {
+      vault=true;
+      assert.ok(p.pos.y>32.2,'roof clearance precedes inward vault');
+      assert.ok(p.vel.z < -14,'vault restores forward travel');
+    }
+    assert.ok(!(p.pos.y<32.2 && p.pos.z<11.15 && p.pos.z>-11.15),'never penetrates the building');
+  }
+  assert.ok(wall && vault);
+  assert.ok(p.pos.z<5,'crosses onto the roof instead of stopping at facade');
+});
+
+test('wall-run preserves lateral flow, expires on a tall wall, and does not recharge on contact', () => {
+  const p=wallFixture(150,10);let wall=false;
+  for(let i=0;i<300;i++) {
+    p.step(1/120);
+    if(p.wallRun){wall=true;assert.ok(p.vel.x>7,'glancing motion survives');}
+  }
+  assert.ok(wall);
+  assert.equal(p.wallRun,null);
+  assert.equal(p.snapshot().traversalPhase,'air');
+  assert.ok(p.vel.y<0,'gravity resumes after bounded climb');
+});
+
+test('new web cancels wall recovery and reset clears recovery state', () => {
+  const p=wallFixture(150);
+  while(!p.wallRun && p.time<1)p.step(1/120);
+  assert.ok(p.wallRun);
+  p.connect({x:0,y:80,z:30});
+  assert.equal(p.wallRun,null);
+  assert.equal(p.vaultUntil,-Infinity);
+  assert.ok(p.anchor);
+  p.reset();
+  assert.equal(p.wallRecoveryUntil,-Infinity);
+});
+
+test('slow bumps and ground-level impacts do not create wall launches', () => {
+  for(const [height,speed] of [[24,3],[3,30]]) {
+    const p=wallFixture(150);p.pos.y=height;p.pos.z=12;p.vel.z=-speed;
+    for(let i=0;i<60;i++){p.step(1/120);assert.equal(p.wallRun,null);}
+  }
+});
+
+test('wall recovery remains consistent at 30, 60 and 120 Hz', () => {
+  const positions=[];
+  for(const fps of [30,60,120]) {
+    const p=wallFixture();
+    for(let i=0;i<fps*1.5;i++)p.step(1/fps);
+    positions.push(p.pos);
+  }
+  for(const pos of positions)assert.ok(Math.hypot(pos.y-positions[0].y,pos.z-positions[0].z)<1e-6);
+});
+
+test('slack constraint never pushes or adds a spring force', () => {
+  const p=new SwingPhysics({spawn:{x:0,y:80,z:0},initialVelocity:{x:0,y:0,z:0}});
+  p.connect({x:0,y:100,z:0});p.ropeLength=40;p.launchReelTarget=null;p.time=1;
+  const position={...p.pos},velocity={...p.vel};
+  p.applyTether(1/120,0);p.constrainRope();
+  assert.deepEqual(p.pos,position);assert.deepEqual(p.vel,velocity);
+  assert.equal(p.tension,0);
+});
+
+test('speed assistance acts only at the taut arc bottom and never slows fast travel', () => {
+  for(const [angle,speed,assisted] of [[0,12,true],[50,12,false],[0,30,false]]) {
+    const p=releaseFixture(angle,speed,0);p.launchReelTarget=null;
+    const before={...p.vel};p.applyTether(.01,0);
+    const gain=Math.hypot(p.vel.x,p.vel.y,p.vel.z)-Math.hypot(before.x,before.y,before.z);
+    if(assisted) assert.ok(gain>0 && gain<=.100001);
+    else assert.ok(Math.abs(gain)<1e-9);
+  }
+});
+
+test('attached steering bends tangent motion without injecting radial speed', () => {
+  const make=()=>{const p=releaseFixture(30,30,0);p.launchReelTarget=null;return p;};
+  const straight=make(),steered=make();
+  straight.step(1/120);steered.step(1/120,{turn:.5});
+  const radial={x:steered.pos.x-steered.anchor.x,y:steered.pos.y-steered.anchor.y,z:steered.pos.z-steered.anchor.z};
+  assert.ok(Math.abs(steered.vel.x)>0.01);
+  assert.ok(Math.abs(radial.x*steered.vel.x+radial.y*steered.vel.y+radial.z*steered.vel.z)<1e-6);
+  assert.ok(Math.abs(Math.hypot(...Object.values(steered.vel))-Math.hypot(...Object.values(straight.vel)))<.01);
+});
+
+test('release forecast stops at the first useful launch and checks its immediate flight', () => {
+  const anchor={x:0,y:100,z:-30};
+  const config={spawn:{x:0,y:70,z:0},initialVelocity:{x:0,y:-18,z:-25}};
+  const p=new SwingPhysics(config), clear=p.evaluateAnchor(anchor);
+  assert.ok(clear.release && clear.samplesUsed<60);
+  const {position,velocity}=clear.release;
+  const wall=new SwingPhysics({...config,buildings:[{x:position.x+velocity.x*.15,z:position.z+velocity.z*.15,width:20,depth:1,height:position.y+15}]});
+  const obstructed=wall.evaluateAnchor(anchor);
+  assert.ok(obstructed.release,'obstacle is beyond the release point');
+  assert.ok(obstructed.impact>4);
+  assert.ok(obstructed.score<clear.score-100);
+  assert.ok(obstructed.samplesUsed<=68);
+});
+
+test('safe anchors without a release in the horizon remain fallback options', () => {
+  const p=new SwingPhysics();
+  const stalled=p.evaluateAnchor({x:15,y:70,z:10});
+  const launch=p.evaluateAnchor({x:0,y:40,z:30});
+  assert.equal(stalled.release,null);
+  assert.equal(stalled.lost,false);
+  assert.ok(Number.isFinite(stalled.score));
+  assert.ok(launch.release && launch.score>stalled.score);
+  assert.ok(stalled.samplesUsed<=68);
+});
+
+test('forward view cone excludes sideways, rear and overhead targets and prefers the center', () => {
+  const center={x:0,y:75,z:-35}, edge={x:30,y:75,z:-30}, side={x:35,y:75,z:-5},rear={x:0,y:75,z:30}, overhead={x:0,y:75,z:0};
+  const p=new SwingPhysics({spawn:{x:0,y:50,z:0},anchors:[edge,side,rear,overhead,center]});
+  p.rankedAnchors=()=>[edge,side,rear,overhead,center];
+  assert.equal(p.findAnchor(),center);
+  assert.deepEqual(p.forwardCandidates(),[center,edge]);
+  assert.equal(p.selectNextForwardAnchor(0,center),edge);
+  assert.equal(p.selectNextForwardAnchor(0,edge),center);
+  p.viewYaw=Math.PI/2;
+  assert.equal(p.findAnchor(),null,'mobile choice clears when panning outside its cone');
+  assert.equal(p.recommendedAnchor,null);
+  assert.equal(p.attach(center),false,'stale displayed target cannot attach outside view');
+});
+
+test('empty mobile selection clears stale choices while behind remains an explicit override', () => {
+  const front={x:0,y:75,z:-25},rear={x:0,y:75,z:25};
+  const p=new SwingPhysics({spawn:{x:0,y:50,z:0},anchors:[front,rear]});
+  p.selectNextForwardAnchor(0);
+  assert.equal(p.selectNextForwardAnchor(Math.PI/2),null);
+  assert.equal(p.selectedAnchor,null);assert.equal(p.recommendedAnchor,null);
+  assert.equal(p.selectDirectionalAnchor(0,-1),rear);
+  assert.equal(p.findAnchor(),rear);
+  assert.equal(p.attach(rear),true,'deliberate behind selection bypasses automatic cone');
 });

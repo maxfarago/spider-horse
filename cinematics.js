@@ -17,12 +17,19 @@ export function createCinematics(renderer, camera) {
   const finish = make({
     source: { value: target.texture }, depthMap: { value: target.depthTexture }, bloom: { value: bloomA.texture },
     inverseProjection: { value: camera.projectionMatrixInverse }, resolution: { value: new THREE.Vector2(1, 1) },
-    exposure: { value: 1 }, aoStrength: { value: .75 }, bloomStrength: { value: .085 }, warmth: { value: .025 },
+    speedBurst: { value: 0 }, exposure: { value: 1 }, aoStrength: { value: .75 }, bloomStrength: { value: .085 }, warmth: { value: .025 },
   }, `varying vec2 vUv; uniform sampler2D source; uniform sampler2D depthMap; uniform sampler2D bloom;
-    uniform mat4 inverseProjection;uniform vec2 resolution;uniform float exposure;uniform float aoStrength;uniform float bloomStrength;uniform float warmth;
+    uniform mat4 inverseProjection;uniform vec2 resolution;uniform float exposure;uniform float aoStrength;uniform float bloomStrength;uniform float warmth;uniform float speedBurst;
     vec3 positionAt(vec2 uv){float d=texture2D(depthMap,uv).r;vec4 p=inverseProjection*vec4(uv*2.-1.,d*2.-1.,1.);return p.xyz/p.w;}
     vec3 filmic(vec3 x){return clamp((x*(2.51*x+.03))/(x*(2.43*x+.59)+.14),0.,1.);}
     void main(){vec3 color=texture2D(source,vUv).rgb;float depth=texture2D(depthMap,vUv).r;
+      if(speedBurst>.001){
+        vec2 radial=vUv-.5;
+        float edge=smoothstep(.12,.5,length(radial));
+        vec3 trail=color;
+        for(int i=1;i<=5;i++) trail+=texture2D(source,vUv-radial*(float(i)*.014*speedBurst*edge)).rgb;
+        color=mix(color,trail/6.,edge*.8*speedBurst);
+      }
       if(depth<.99999 && aoStrength>.01){
         vec3 p=positionAt(vUv);vec3 n=normalize(cross(dFdx(p),dFdy(p)));float occ=0.;
         float radius=clamp(2.5/max(-p.z,1.),.002,.035);
@@ -50,6 +57,7 @@ export function createCinematics(renderer, camera) {
       target.setSize(width, height); bloomA.setSize(Math.max(1, width >> 2), Math.max(1, height >> 2)); bloomB.setSize(Math.max(1, width >> 2), Math.max(1, height >> 2));
       finish.uniforms.resolution.value.set(width, height); finish.uniforms.aoStrength.value = high ? .75 : 0;
     },
+    setSpeedBurst(value) { finish.uniforms.speedBurst.value = Math.max(0, Math.min(1, value)); },
     setLook({ warmth = .025, bloom = .085 } = {}) { finish.uniforms.warmth.value = warmth; bloomAmount = bloom; },
     render(scene) {
       const mapping = renderer.toneMapping; renderer.toneMapping = THREE.NoToneMapping;

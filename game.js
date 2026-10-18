@@ -4,7 +4,8 @@ import { createHorse } from './horse.js';
 import { createWeb } from './web.js';
 import { updateWebTarget } from './web-target.js';
 import { cameraClearance, revealAnchor, turnTowardAnchor } from './anchor-camera.js';
-import { bindHold, rooftopInput } from './controls.js';
+import { attachmentViewYaw, bindHold, bindJoystick, panView, rooftopInput } from './controls.js';
+import { traversalFeel } from './traversal-feel.js';
 import { SwingPhysics } from './physics.js';
 import { HDRLoader } from './vendor/HDRLoader.js';
 import { createCinematics } from './cinematics.js';
@@ -15,7 +16,7 @@ const canvas = $('world');
 const keys = new Set();
 const touchKeys = new Set(), inputCleanups = [];
 const held = code => keys.has(code) || touchKeys.has(code);
-const webControlLabel = () => matchMedia('(max-width:760px), (pointer:coarse)').matches ? 'Shoot web' : 'Space';
+const webControlLabel = () => matchMedia('(max-width:760px), (pointer:coarse)').matches ? 'Swing' : 'Space';
 const preferences = { atmosphere: 'golden', quality: 'high', camera: 'chase', audio: false, reduceMotion: false };
 try { Object.assign(preferences, JSON.parse(localStorage.getItem('skystride.preferences') || '{}')); } catch { /* Private browsing still supports play. */ }
 let renderer, scene, camera, city, horse, physics, sun, ambient, fill, skyMaterial, cinematics;
@@ -26,7 +27,7 @@ const anchorViewState = {};
 const previewStartOffset = new THREE.Vector3(), previewLookOffset = new THREE.Vector3();
 const orbit = 0;
 const pitch = .1;
-let displayedAnchor = null;
+let displayedAnchor = null, joystickSteering = 0;
 let lastImpact = -1, lastReset = 0, checkpointPulse = 0, lastUI = 0, autoAttachTime = 0;
 let previousTension = 0, ropeRipple = 0, lastAttachmentCount = 0;
 let audioContext, windGain, windFilter, cityGain;
@@ -230,13 +231,25 @@ function switchAnchor(direction, facing = 0) {
   frameSelectedAnchor = !held('Space');
   facingAnchor = candidate;
   startPivotReveal();
-  if (held('Space') && (!physics.anchor || physics.anchor.x !== candidate.x || physics.anchor.y !== candidate.y || physics.anchor.z !== candidate.z)) { physics.release(); physics.attach(); }
+  if (held('Space') && (!physics.anchor || physics.anchor.x !== candidate.x || physics.anchor.y !== candidate.y || physics.anchor.z !== candidate.z)) { physics.release(); attachLedge(candidate); }
   updateUI();
+}
+function resetAttachmentView(velocity, wasGrounded) {
+  if (wasGrounded) return;
+  viewYaw = attachmentViewYaw(viewYaw, velocity, false);
+  facingAnchor = null; frameSelectedAnchor = false;
+}
+function attachLedge(candidate) {
+  physics.viewYaw = viewYaw + orbit;
+  const wasGrounded = physics.grounded, velocity = { ...physics.vel }, count = physics.attachmentCount;
+  const attached = physics.attach(candidate);
+  if (physics.attachmentCount !== count) resetAttachmentView(velocity, wasGrounded);
+  return attached;
 }
 function beginSwing() {
   if (!started || paused || anyDialog()) return;
   frameSelectedAnchor = false;
-  if (physics.attach(displayedAnchor)) { tone(170, .08); autoAttachTime = 0; } else { autoAttachTime = 1.4; toast(physics.grounded ? 'No rooftop in reach. Jump with F and hold SPACE.' : 'Keep holding — waiting for a reachable ledge.', 1700); }
+  if (attachLedge(displayedAnchor)) { tone(170, .08); autoAttachTime = 0; } else { autoAttachTime = 1.4; toast(physics.grounded ? 'No rooftop in reach. Jump with F and hold SPACE.' : 'Keep holding — waiting for a reachable ledge.', 1700); }
 }
 function setupEvents() {
   addEventListener('resize', resize);
@@ -284,7 +297,6 @@ function setupEvents() {
     keys.add(event.code);
     if (event.repeat) return;
     if (event.code === 'Space') beginSwing();
-    if (!physics.grounded && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) switchAnchor(event.code === 'ArrowLeft' ? -1 : 1);
     if (!physics.grounded && (event.code === 'ArrowUp' || event.code === 'ArrowDown')) switchAnchor(0, event.code === 'ArrowUp' ? 1 : -1);
     if (event.code === 'KeyR') resetRun();
 
@@ -292,13 +304,27 @@ function setupEvents() {
   addEventListener('keyup', (event) => { const wasHeld = keys.delete(event.code); if (wasHeld && event.code === 'Space' && !held('Space')) { physics.release({ launch: true }); autoAttachTime = 0; } });
   addEventListener('blur', () => { clearInput(); if (started && !anyDialog()) setPaused(true); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { clearInput(); if (started) setPaused(true); } previousTime = performance.now(); });
+  inputCleanups.push(bindJoystick($('steering-joystick'), {
+    enabled: () => started && !physics.lost && !paused && !anyDialog(),
+    change: value => {
+      joystickSteering = value;
+      $('joystick-thumb').style.transform = `translateX(${value * 30}px)`;
+    },
+  }));
+  $('select-ledge').onclick = () => {
+    if (!started || physics.lost || paused || anyDialog()) return;
+    const candidate = physics.selectNextForwardAnchor(viewYaw + orbit, displayedAnchor);
+    if (!candidate) { facingAnchor = null; frameSelectedAnchor = false; updateUI(); toast('No new ledge ahead.'); return; }
+    facingAnchor = candidate; frameSelectedAnchor = true;
+    startPivotReveal(); updateUI();
+  };
   document.querySelectorAll('[data-touch]').forEach(button => {
     const mapping = { swing: 'Space', left: 'ArrowLeft', right: 'ArrowRight' };
     const code = mapping[button.dataset.touch];
     inputCleanups.push(bindHold(button, {
       enabled: () => started && !physics.lost && !paused && !anyDialog(),
       press: () => {
-        if (button.dataset.touch !== 'swing') { touchKeys.add(code); if (!physics.grounded) switchAnchor(button.dataset.touch === 'left' ? -1 : 1); return; }
+        if (button.dataset.touch !== 'swing') { touchKeys.add(code); return; }
         touchKeys.add(code);
         if (code === 'Space') beginSwing();
       },
@@ -312,7 +338,12 @@ function setupEvents() {
 
 function updatePhysics(dt) {
   if (physics.lost) return { turn: 0, forward: 0 };
-  const turn = 0, reel = 0;
+  const turn = physics.grounded ? 0 : THREE.MathUtils.clamp(Number(held('ArrowLeft')) - Number(held('ArrowRight')) - joystickSteering, -1, 1), reel = 0;
+  if (held('ArrowLeft') || held('ArrowRight') || joystickSteering) {
+    viewYaw = panView(viewYaw, held, dt, joystickSteering);
+    facingAnchor = null; frameSelectedAnchor = false;
+  }
+  physics.viewYaw = viewYaw + orbit;
   const { forward, strafe } = rooftopInput(physics.grounded, held);
   if (physics.grounded) {
     physics.yaw = viewYaw;
@@ -320,10 +351,12 @@ function updatePhysics(dt) {
     frameSelectedAnchor = false;
   }
   const previous = { ...physics.pos };
+  const wasGrounded = physics.grounded, incomingVelocity = { ...physics.vel }, attachmentCount = physics.attachmentCount;
   physics.step(dt, { turn, forward, strafe, reel, swingHeld: held('Space'), swingTarget: displayedAnchor, boost: false });
+  if (physics.attachmentCount !== attachmentCount) resetAttachmentView(incomingVelocity, wasGrounded);
   if (physics.lost) { loseRun(); return { turn: 0, forward: 0 }; }
   if ((physics.attachmentCount || 0) !== lastAttachmentCount) { lastAttachmentCount = physics.attachmentCount || 0; ropeRipple = 1; tone(190, .065); }
-  if (autoAttachTime > 0 && held('Space')) { autoAttachTime -= dt; if (physics.attach(displayedAnchor)) autoAttachTime = 0; }
+  if (autoAttachTime > 0 && held('Space')) { autoAttachTime -= dt; if (attachLedge(displayedAnchor)) autoAttachTime = 0; }
   if (physics.resetCount !== lastReset) { lastReset = physics.resetCount; toast('Back in the city. Keep your line inside the island.'); }
   if (physics.lastImpact && physics.lastImpact.time !== lastImpact) { lastImpact = physics.lastImpact.time; if (physics.lastImpact.speed > 16) tone(65, .08); }
   if (running) {
@@ -344,6 +377,7 @@ function updatePhysics(dt) {
   return { turn, forward };
 }
 function updateHorse(dt, input) {
+  const feel = started ? traversalFeel(physics, preferences.reduceMotion) : null;
   let position, speed, grounded, swinging, verticalSpeed;
   if (!started) {
     position = { x: city.spawn.x, y: city.spawn.y, z: city.spawn.z };
@@ -351,14 +385,14 @@ function updateHorse(dt, input) {
     horse.group.rotation.set(-Math.PI / 2, .08, 0, 'YXZ');
   } else {
     position = physics.pos; speed = Math.hypot(physics.vel.x, physics.vel.z); grounded = physics.grounded; swinging = !!physics.anchor; verticalSpeed = physics.vel.y;
-    const pitchGoal = grounded ? 0 : THREE.MathUtils.clamp(-physics.vel.y * .008, -.32, .3);
+    const pitchGoal = grounded ? 0 : physics.wallRun ? -.8 : THREE.MathUtils.clamp(-physics.vel.y * .008, -.32, .3);
     horse.group.rotation.x = THREE.MathUtils.damp(horse.group.rotation.x, pitchGoal, 4, dt);
     horse.group.rotation.y = viewYaw;
-    horse.group.rotation.z = THREE.MathUtils.damp(horse.group.rotation.z, -input.turn * .2 + (physics.anchor ? Math.sin(now * 1.8) * .045 : 0), 5, dt);
+    horse.group.rotation.z = THREE.MathUtils.damp(horse.group.rotation.z, -input.turn * (preferences.reduceMotion ? .08 : .18 + feel.swing * .12), 5, dt);
   }
   horse.group.position.set(position.x, position.y - 2.2, position.z);
   horsePosition.set(position.x, position.y, position.z);
-  horse.update(dt, { hanging: !started, time: now, speed, grounded, swinging, turn: input.turn, verticalSpeed, tension: started ? physics.tension || 0 : .5, stretch: started ? physics.stretch || 0 : 0 });
+  horse.update(dt, { feel, reduceMotion: preferences.reduceMotion, hanging: !started, time: now, speed, grounded, swinging, turn: input.turn, verticalSpeed, tension: started ? physics.tension || 0 : .5, stretch: started ? physics.stretch || 0 : 0 });
   if (!started) {
     horse.group.updateMatrixWorld(true);
     horse.hangingAttachment.getWorldPosition(tetherStart);
@@ -369,6 +403,7 @@ function updateHorse(dt, input) {
   }
 }
 function updateCamera(dt) {
+  const feel = started ? traversalFeel(physics, preferences.reduceMotion) : {distance:0,height:0,fov:0,lookAhead:0};
   // Follow translation immediately; ease only the framing change, not the horse's motion.
   if (started) {
     cameraTravel.copy(horsePosition).sub(cameraTrackedHorse);
@@ -376,7 +411,7 @@ function updateCamera(dt) {
   }
   cameraTrackedHorse.copy(horsePosition);
   if (started && frameSelectedAnchor) {
-    const candidate = physics.anchor || physics.findAnchor();
+    const candidate = physics.findAnchor();
     if (candidate !== facingAnchor) startPivotReveal();
     facingAnchor = candidate;
   }
@@ -392,10 +427,17 @@ function updateCamera(dt) {
   } else {
     const speed = Math.hypot(physics.vel.x, physics.vel.z);
     const baseDistance = preferences.camera === 'wide' ? 19 : preferences.camera === 'close' ? 6 : 8.5;
-    const distance = baseDistance + (preferences.reduceMotion ? 0 : Math.min(speed * .035, 2));
+    const distance = baseDistance + (preferences.reduceMotion ? 0 : Math.min(speed * .035, 2)) + feel.distance;
     const yaw = viewYaw + orbit;
-    desiredCamera.set(horsePosition.x + Math.sin(yaw) * distance, horsePosition.y + 3 + pitch * distance, horsePosition.z + Math.cos(yaw) * distance);
+    desiredCamera.set(horsePosition.x + Math.sin(yaw) * distance, horsePosition.y + 3 + pitch * distance + feel.height, horsePosition.z + Math.cos(yaw) * distance);
     desiredTarget.set(horsePosition.x - Math.sin(viewYaw) * 7, horsePosition.y + .8, horsePosition.z - Math.cos(viewYaw) * 7);
+    // Look slightly into travel without overriding a manually panned view.
+    if (!frameSelectedAnchor && Math.abs(orbit) < .1 && speed > 1) {
+      const alignment = (-Math.sin(viewYaw) * physics.vel.x - Math.cos(viewYaw) * physics.vel.z) / speed;
+      const ahead = feel.lookAhead * Math.max(0, alignment);
+      desiredTarget.x += physics.vel.x / speed * ahead;
+      desiredTarget.z += physics.vel.z / speed * ahead;
+    }
     // Keep the player's chosen view until the run resets.
     desiredTarget.lerp(horsePosition, Math.min(1, Math.abs(orbit) * 1.5 + Math.abs(pitch - .1)));
     // Shorten the chase camera before it enters a facade.
@@ -405,10 +447,10 @@ function updateCamera(dt) {
       if (city.buildings.some(b => point.y < b.height + 1 && point.x > b.minX - 1 && point.x < b.maxX + 1 && point.z > b.minZ - 1 && point.z < b.maxZ + 1)) { desiredCamera.copy(horsePosition).addScaledVector(delta, Math.max(.15, (step - 1) / 14)); desiredCamera.y += 1; break; }
     }
     desiredCamera.y = Math.max(desiredCamera.y, 2.7);
-    const fov = preferences.reduceMotion ? 57 : 54 + Math.min(speed * .1, 9);
-    camera.fov = THREE.MathUtils.damp(camera.fov, fov, 2.5, dt); camera.updateProjectionMatrix();
+    const fov = preferences.reduceMotion ? 57 : 54 + Math.min(speed * .1, 9) + feel.fov;
+    camera.fov = THREE.MathUtils.damp(camera.fov, fov, 6, dt); camera.updateProjectionMatrix();
   }
-  const framedAnchor = started && frameSelectedAnchor ? physics.anchor || physics.findAnchor() : null;
+  const framedAnchor = started && frameSelectedAnchor ? physics.findAnchor() : null;
   if (framedAnchor) {
     previewAge += dt;
     revealAnchor(camera, cameraTarget, horsePosition, framedAnchor, previewStartOffset, previewLookOffset, previewAge, city.buildings, anchorViewState);
@@ -456,7 +498,20 @@ function updateParticles() {
   }
   streaks.geometry.attributes.position.needsUpdate = true;
 }
+function snapBurst() {
+  return physics.lastSnap && physics.lastSnap.gain > 1 ? Math.max(0, 1 - (physics.time - physics.lastSnap.time) / .45) : 0;
+}
 function updateUI() {
+  physics.viewYaw = viewYaw + orbit;
+  const debug = physics.swingTelemetry();
+  $('swing-debug').hidden = !started || !(location.hostname === 'localhost' || location.hostname === '127.0.0.1' || new URLSearchParams(location.search).get('debug') === '1');
+  $('swing-debug').dataset.ready = String(debug.ready);
+  $('debug-speed').textContent = `${Math.round(debug.speed * 3.6)} km/h`;
+  $('debug-phase').textContent = `${traversalFeel(physics).phase.toUpperCase()} · ${debug.phase}`;
+  $('debug-angle').hidden = debug.angle === null;
+  $('debug-angle').style.left = `${(debug.angle || 0) / 180 * 100}%`;
+  $('debug-detail').textContent = `${debug.angle === null ? 'No tether' : `${Math.round(debug.angle)}° from bottom`} · vertical ${debug.verticalSpeed.toFixed(1)} m/s`;
+  $('debug-snap').textContent = debug.lastSnap ? `SNAP ${Math.round(debug.lastSnap.before * 3.6)} → ${Math.round(debug.lastSnap.after * 3.6)} km/h · ${Math.max(0, physics.time - debug.lastSnap.time).toFixed(1)}s ago` : 'Release on the rising arc for a small boost';
   const speed = started ? Math.hypot(physics.vel.x, physics.vel.y, physics.vel.z) * 3.6 : 0;
   $('speed').textContent = Math.round(speed).toString();
   $('speed-bar').style.width = `${Math.min(speed / 250 * 100, 100)}%`;
@@ -470,7 +525,7 @@ function updateUI() {
   shell.dataset.lowAltitude = String(lowAltitude);
   $('altitude-note').textContent = physics.lost ? 'On the ground' : lowAltitude ? 'Mind the pavement' : 'Above the street';
   $('timer').textContent = formatTime(elapsed); $('checkpoint-count').textContent = `${String(checkpoint).padStart(2, '0')} / 08`; $('progress-bar').style.width = `${checkpoint / 8 * 100}%`;
-  const anchor = active || physics.findAnchor();
+  const anchor = frameSelectedAnchor ? physics.findAnchor() : active || physics.findAnchor();
   displayedAnchor = anchor;
   const anchorNumber = anchor ? city.anchors.findIndex(a => a.x === anchor.x && a.y === anchor.y && a.z === anchor.z) + 1 : 0;
   updateWebTarget($('web-target'), $('web-target-state'), $('web-target-distance'), { started, anchor, position: physics.pos, attached: !!active, anchorNumber });
@@ -551,12 +606,13 @@ function frame(time) {
     while (accumulator >= 1 / 120 && !physics.lost) { input = updatePhysics(1 / 120); accumulator -= 1 / 120; }
   } else accumulator = 0;
   const visualDt = (playing && !physics.lost) || !started ? dt : 0;
-  updateHorse(visualDt, input); updateCamera(dt); updateRope(); updateParticles();
+  updateHorse(visualDt, input); updateCamera(visualDt); updateRope(); updateParticles();
   if (playing || !started) city.update(dt, now);
   ropeRipple = Math.max(0, ropeRipple - dt * 2);
   skyMaterial.uniforms.time.value = now; checkpointPulse = Math.max(0, checkpointPulse - dt * 1.5);
   if (running && rings[checkpoint]) rings[checkpoint].rotation.z = Math.sin(now * .7) * .04;
   if (time - lastUI > 75) { updateUI(); updateAudio(); lastUI = time; }
+  cinematics.setSpeedBurst(preferences.reduceMotion ? 0 : snapBurst());
   cinematics.render(scene); renderFrames++;
 }
 boot();

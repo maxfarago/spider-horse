@@ -222,3 +222,16 @@ test('intro hang has a connected ankle sling and returns to the animated flight 
   assert.equal(sling.visible, false);
   assert.ok(snapshot(horse).every(Number.isFinite));
 });
+
+test('catch and soar poses differ on the real rig and remain stable through pause and landing', async t => {
+  const catchHorse=await horseFixture(t), soarHorse=await horseFixture(t);
+  const common={grounded:false,speed:30,verticalSpeed:5};
+  advance(catchHorse,.5,{...common,feel:{catch:1}});
+  advance(soarHorse,.5,{...common,feel:{soar:1}});
+  assert.ok(rotationOf(catchHorse,'upperarm_L').angleTo(rotationOf(soarHorse,'upperarm_L'))>.1);
+  const paused=snapshot(soarHorse);
+  soarHorse.update(0,{...common,feel:{release:1}});
+  assert.deepEqual(snapshot(soarHorse),paused);
+  advance(soarHorse,2,{grounded:true,speed:0});
+  assert.ok(snapshot(soarHorse).every(Number.isFinite));
+});

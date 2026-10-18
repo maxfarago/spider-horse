@@ -128,6 +128,10 @@ export async function createHorse() {
   const neck = model.getObjectByName('neck_02');
   const head = model.getObjectByName('head');
   const tail = [1, 2, 3, 4, 5].map(n => model.getObjectByName(`tail_0${n}`));
+  const forelegs = ['upperarm_L', 'upperarm_R'].map(name => model.getObjectByName(name));
+  const lowerlegs = ['forearm_L', 'forearm_R'].map(name => model.getObjectByName(name));
+  const hindlegs = ['thigh_L', 'thigh_R'].map(name => model.getObjectByName(name));
+  const phasePose = { catch: 0, swing: 0, release: 0, soar: 0, wallRun: 0, vault: 0 };
   const axisX = new THREE.Vector3(1, 0, 0);
   const axisZ = new THREE.Vector3(0, 0, 1);
   const offset = new THREE.Quaternion();
@@ -142,6 +146,11 @@ export async function createHorse() {
     if (!(dt > 0)) return;
     dt = Math.min(dt, 0.08);
     clock += dt;
+    for (const phase of Object.keys(phasePose)) {
+      const target = state.hanging || state.grounded ? 0 : state.feel?.[phase] || 0;
+      phasePose[phase] = state.hanging ? 0 : THREE.MathUtils.damp(phasePose[phase], target, 12, dt);
+    }
+    const accent = state.reduceMotion ? .35 : 1;
     speed = THREE.MathUtils.damp(speed, Math.max(0, state.speed || 0), 5, dt);
     flight = THREE.MathUtils.damp(flight, state.grounded ? 0 : 1, state.grounded ? 8 : 5, dt);
     const ropeTension = THREE.MathUtils.clamp(state.tension || 0, 0, 1);
@@ -173,7 +182,7 @@ export async function createHorse() {
     // gameplay momentum exceeds a real horse's running speed.
     walkRate = THREE.MathUtils.damp(walkRate, THREE.MathUtils.clamp(speed / 2.4, 0.65, 1.3), 4, dt);
     const groundCadence = THREE.MathUtils.clamp(speed / 8.5, 0.75, 1.28);
-    const airCadence = .94 + tension * .14 + descent * .10 + Math.min(speed / 40, 1) * .06;
+    const airCadence = (.94 + tension * .14 + descent * .10 + Math.min(speed / 40, 1) * .06) * (1 - phasePose.soar * .65 - phasePose.release * .3);
     canterRate = THREE.MathUtils.damp(canterRate, THREE.MathUtils.lerp(groundCadence, airCadence, flight), 4, dt);
     actions.walk.setEffectiveTimeScale(walkRate);
     actions.canter.setEffectiveTimeScale(canterRate);
@@ -209,8 +218,8 @@ export async function createHorse() {
     pitchVelocity += (load - previousLoad) * .6;
     liftVelocity += (load - previousLoad) * .18;
     previousLoad = load;
-    const targetPitch = flight * (.12 * ropeTension + .06 * ropeExtension - .10 * descent + .04 * ascent);
-    const targetLift = flight * (.055 * ropeTension + .035 * ropeExtension);
+    const targetPitch = accent * (.12 * phasePose.catch - .12 * phasePose.release - .06 * phasePose.soar) + flight * (.12 * ropeTension + .06 * ropeExtension - .10 * descent + .04 * ascent);
+    const targetLift = accent * (-.1 * phasePose.catch + .09 * phasePose.release) + flight * (.055 * ropeTension + .035 * ropeExtension);
     // A damped secondary spring carries the body through a catch and release.
     // Substeps keep the recoil stable even when a rendering frame is delayed.
     const steps = Math.ceil(dt * 120), h = dt / steps;
@@ -223,6 +232,14 @@ export async function createHorse() {
     suspension.rotation.set(bodyPitch * flight, 0, -turn * .025 * flight);
     suspension.position.copy(suspensionPivot);
     suspension.position.y += lift * flight;
+
+    // Additive poses distinguish a gathered catch from an extended release.
+    // Mixer evaluation restores the authored transforms every frame.
+    const gather = accent * (.24 * phasePose.catch + .1 * phasePose.swing + .2 * phasePose.vault);
+    const reach = accent * (.25 * phasePose.release + .18 * phasePose.soar + .14 * phasePose.wallRun);
+    for (const bone of forelegs) bone.quaternion.multiply(offset.setFromAxisAngle(axisX, gather - reach));
+    for (const bone of lowerlegs) bone.quaternion.multiply(offset.setFromAxisAngle(axisX, -gather * 1.3 + reach * .4));
+    for (const bone of hindlegs) bone.quaternion.multiply(offset.setFromAxisAngle(axisX, -gather * .65 + reach * .65));
 
     // This rig's local X runs across the animal; Z swings a bone laterally.
     // Clip evaluation restores all joints before these small additive offsets.
