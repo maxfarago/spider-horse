@@ -46,11 +46,11 @@ claim identical proprietary physics. Reference: [PlayStation's 2018 hands-on](ht
 
 Private source repository: https://github.com/maxfarago/spider-horse
 
-The default and Pages production branch is `master`. GitHub Actions runs tests, syntax checks and the static build on pushes and pull requests. It does not deploy.
+The default and Pages production branch is `master`. GitHub Actions runs tests, syntax checks and the static build on pushes and pull requests. After all three succeed on a push to `master`, the same job deploys `dist/` to production. Pull requests and other branches never deploy. A manual workflow run on `master` also validates and deploys.
 
 The game is deployed to the Cloudflare Pages project `spider-horse` in the same account as Neigho Geo. Its approved custom domain is https://spider.max.horse; the fallback is https://spider-horse.pages.dev. `wrangler.toml` records its project name and output directory. The Neigho Geo registry has not been changed.
 
-This project uses Direct Upload for deliberate releases. GitHub pushes alone do not publish it. GitHub Actions can be extended to upload releases later; switching to Cloudflare's built-in Git integration requires a new Pages project. See the [Cloudflare Direct Upload guide](https://developers.cloudflare.com/pages/get-started/direct-upload/).
+This project uses Cloudflare Pages Direct Upload through `.github/workflows/validate.yml`. Deployment uses the repository Actions secret `CLOUDFLARE_API_TOKEN`, with Pages edit access for the configured account. Runs are serialized per branch without interrupting an active upload. Check the **Validate and deploy game** workflow for deployment status and the resulting URL.
 
 ### Manual releases
 
@@ -65,7 +65,7 @@ CLOUDFLARE_ACCOUNT_ID=c7698f65669d1881d1f02fd4bcbc250a npx wrangler@4.135.0 page
 
 The upload updates the public game at https://spider.max.horse and https://spider-horse.pages.dev. Verify the release before updating its listing in the Neigho Geo registry.
 
-Wrangler needs a valid Cloudflare login or an API token with Pages edit access for the configured account. During setup, the environment API token was rejected, but the existing OAuth login worked after removing `CLOUDFLARE_API_TOKEN` and `CF_API_TOKEN` from that command's environment. No credentials are stored in this repository.
+For local manual releases, load `CLOUDFLARE_API_TOKEN` from your shell profile. GitHub Actions uses its own saved secret; rotating the local token also requires updating that secret. No credentials are committed to this repository.
 
 Keep the GitHub repository private and preserve all third-party license notices. Preserve the current controls, horse/title pose, minimalist HUD, elastic physics and momentum-aware selection performance during future changes.
 

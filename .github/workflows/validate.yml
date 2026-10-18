@@ -1,4 +1,4 @@
-name: Validate game
+name: Validate and deploy game
 
 on:
   push:
@@ -7,6 +7,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: game-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -19,3 +23,9 @@ jobs:
       - run: npm test
       - run: npm run check
       - run: npm run build
+      - name: Deploy production to Cloudflare Pages
+        if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: c7698f65669d1881d1f02fd4bcbc250a
+        run: npx --yes wrangler@4.135.0 pages deploy dist --project-name spider-horse --branch master
