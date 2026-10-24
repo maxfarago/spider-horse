@@ -16,8 +16,8 @@ function collider(building) {
   return {
     minX: (building.minX ?? building.x - building.width / 2) - BODY_RADIUS,
     maxX: (building.maxX ?? building.x + building.width / 2) + BODY_RADIUS,
-    minY: -80,
-    maxY: building.height + FOOT_CLEARANCE,
+    minY: building.minY ?? -80,
+    maxY: (building.roofHeight ?? building.height) + FOOT_CLEARANCE,
     minZ: (building.minZ ?? building.z - building.depth / 2) - BODY_RADIUS,
     maxZ: (building.maxZ ?? building.z + building.depth / 2) + BODY_RADIUS,
   };
@@ -58,8 +58,11 @@ function sweepBox(start, delta, box) {
 
 /** Metre / second simulation, independent of the renderer or frame rate. */
 export class SwingPhysics {
-  constructor({ buildings = [], anchors = [], spawn = { x: 0, y: 45, z: 50 }, bounds = {}, fatalGround = false, initialVelocity = { x: 0, y: 0, z: -16 } } = {}) {
+  constructor({ buildings = [], rooftopObstacles = [], island = null, waterLevel = -1.2, anchors = [], spawn = { x: 0, y: 45, z: 50 }, bounds = {}, fatalGround = false, initialVelocity = { x: 0, y: 0, z: -16 } } = {}) {
+    this.island = island;
+    this.waterLevel = waterLevel;
     this.buildings = buildings.map(collider);
+    this.rooftopObstacles = rooftopObstacles.map(collider);
     // Rope visibility uses building surfaces, not the horse's enlarged collision hull.
     this.ropeObstacles = this.buildings.map(box => ({ ...box,
       minX: box.minX + BODY_RADIUS - .15, maxX: box.maxX - BODY_RADIUS + .15,
@@ -111,6 +114,8 @@ export class SwingPhysics {
     this.swingPeakForward = 0;
     this.swingRearmAt = Infinity;
     this.pointZip = null;
+    this.perch = null;
+    this.perchedAt = -Infinity;
     this.pointLaunchUntil = -Infinity;
     this.airZipUntil = -Infinity;
     this.zipBurstAt = -Infinity;
@@ -290,7 +295,7 @@ export class SwingPhysics {
   }
 
   attach(candidate = undefined) {
-    if (this.lost) return false;
+    if (this.lost || this.perch) return false;
     if (this.anchor) return true;
     // An explicit target is the one shown by the HUD. Never silently replace
     // it at keydown if movement has made it invalid.
@@ -302,7 +307,7 @@ export class SwingPhysics {
   }
 
   connect(candidate) {
-    if (this.lost || this.anchor) return;
+    if (this.lost || this.anchor || this.perch) return;
     this.swingRearmAt = Infinity;
     this.pointZip = null; this.pointLaunchUntil = -Infinity;
     this.heldAttachmentSpent = true;
@@ -474,7 +479,7 @@ export class SwingPhysics {
 
   contextualAction(yaw, candidate = undefined) {
     const near = this.pointZip && this.pointZip.stage === 1 && length({x:this.pos.x-this.pointZip.landing.x,y:this.pos.y-this.pointZip.landing.y,z:this.pos.z-this.pointZip.landing.z}) < 8;
-    if (near || this.time <= this.pointLaunchUntil) return {label:'Launch', kind:'jump'};
+    if (this.perch || near || this.time <= this.pointLaunchUntil) return {label:'Launch', kind:'jump'};
     if (this.pointZip) return {label:'Zip', kind:'wait'};
     if (this.anchor || this.grounded) return {label:'Jump', kind:'jump'};
     const target = candidate === undefined ? this.pointCandidate(yaw) : candidate && this.pointCandidate(yaw, candidate.anchor);
@@ -498,19 +503,23 @@ export class SwingPhysics {
       if(!box)continue;
       const xSide=anchor.x<(box.minX+box.maxX)/2 ? -1 : 1;
       const zSide=anchor.z<(box.minZ+box.maxZ)/2 ? -1 : 1;
-      const staging={x:xSide<0?box.minX-.5:box.maxX+.5,y:box.maxY+3,z:zSide<0?box.minZ-.5:box.maxZ+.5};
+      const staging={x:xSide<0?box.minX-.5:box.maxX+.5,y:box.maxY+5,z:zSide<0?box.minZ-.5:box.maxZ+.5};
       const delta={x:staging.x-this.pos.x,y:staging.y-this.pos.y,z:staging.z-this.pos.z};
       const distance=length(delta);
       if(Math.abs(delta.y)>Math.hypot(delta.x,delta.z)*.75 || distance<5 || distance>65 || this.buildings.some(b=>sweepBox(this.pos,delta,b)))continue;
-      const landing={x:clamp(anchor.x,box.minX+2,box.maxX-2),y:box.maxY+3,z:clamp(anchor.z,box.minZ+2,box.maxZ-2)};
+      // Colliders are expanded by BODY_RADIUS; inset again to keep the horse on the roof.
+      const roof={minX:box.minX+2*BODY_RADIUS+.5,maxX:box.maxX-2*BODY_RADIUS-.5,minZ:box.minZ+2*BODY_RADIUS+.5,maxZ:box.maxZ-2*BODY_RADIUS-.5};
+      const landing={x:clamp(anchor.x,roof.minX+1,roof.maxX-1),y:box.maxY+EPSILON,z:clamp(anchor.z,roof.minZ+1,roof.maxZ-1)};
+      const approach={x:landing.x-staging.x,y:landing.y-staging.y,z:landing.z-staging.z};
+      if(this.rooftopObstacles.some(b=>sweepBox(this.pos,delta,b) || sweepBox(staging,approach,b)))continue;
       const score=alignment*100-distance*.5;
-      if(score>bestScore){bestScore=score;best={anchor,staging,landing};}
+      if(score>bestScore){bestScore=score;best={anchor,staging,landing,roof};}
     }
     return best;
   }
 
   zipToPoint(candidate) {
-    if(this.lost || this.pointZip || !candidate)return false;
+    if(this.lost || this.perch || this.pointZip || !candidate)return false;
     // Validate against current geometry, not a stale marker or caller-provided path.
     const yaw=Math.atan2(-(candidate.anchor.x-this.pos.x),-(candidate.anchor.z-this.pos.z));
     const current=this.pointCandidate(yaw,candidate.anchor);
@@ -518,7 +527,7 @@ export class SwingPhysics {
     this.release(); this.wallRun=null; this.vaultUntil=-Infinity;
     const dx=current.landing.x-this.pos.x,dz=current.landing.z-this.pos.z,n=Math.hypot(dx,dz)||1;
     this.pointLaunchDirection={x:dx/n,z:dz/n};
-    this.pointZip={...current,stage:0,until:this.time+2.5};
+    this.pointZip={...current,stage:0,startedAt:this.time,until:this.time+2.5};
     this.zipBurstAt=this.time;
     this.pointLaunchUntil=-Infinity; this.heldAttachmentSpent=true; this.grounded=false;
     return true;
@@ -526,7 +535,10 @@ export class SwingPhysics {
 
   pointLaunch() {
     const near=this.pointZip && this.pointZip.stage===1 && Math.hypot(this.pos.x-this.pointZip.landing.x,this.pos.y-this.pointZip.landing.y,this.pos.z-this.pointZip.landing.z)<8;
-    if(this.lost || (!near && this.time>this.pointLaunchUntil))return false;
+    if(this.lost || (!this.perch && !near && this.time>this.pointLaunchUntil))return false;
+    if(this.perch) this.pointLaunchDirection={x:-Math.sin(this.yaw),z:-Math.cos(this.yaw)};
+    this.perch=null;
+    this.heldAttachmentSpent=true;this.swingRearmAt=this.time+.18;
     this.pointZip=null; this.pointLaunchUntil=-Infinity; this.grounded=false;
     this.vel={x:this.pointLaunchDirection.x*32,y:15,z:this.pointLaunchDirection.z*32};
     this.releasedAt=this.time; this.soarUntil=this.time+.45;
@@ -575,9 +587,15 @@ export class SwingPhysics {
     let distance=length(delta);
     if(distance<.4) {
       if(zip.stage===0){this.pointZip={...zip,stage:1};return true;}
-      this.pointZip=null;this.pointLaunchUntil=this.time+.2;this.vel={x:0,y:0,z:0};return true;
+      // Sweep the last centimetres, then hold the exact roof contact until launch.
+      if(this.move(delta)){this.pointZip=null;this.pointLaunchUntil=-Infinity;return true;}
+      this.perch={...target,roof:zip.roof};this.perchedAt=this.time;
+      this.yaw=Math.atan2(-this.pointLaunchDirection.x,-this.pointLaunchDirection.z);
+      this.pointZip=null;this.pointLaunchUntil=-Infinity;this.vel={x:0,y:0,z:0};
+      this.grounded=true;this.soarUntil=-Infinity;return true;
     }
-    const speed=Math.min(68,distance/dt);
+    const pullSpeed=zip.stage===0 ? Math.min(78,34+(this.time-zip.startedAt)*300) : Math.max(16,Math.min(60,Math.sqrt(320*distance)));
+    const speed=Math.min(pullSpeed,distance/dt);
     this.vel={x:delta.x/distance*speed,y:delta.y/distance*speed,z:delta.z/distance*speed};
     const collided=this.move({x:this.vel.x*dt,y:this.vel.y*dt,z:this.vel.z*dt});
     if(collided){this.pointZip=null;this.pointLaunchUntil=-Infinity;}
@@ -586,6 +604,7 @@ export class SwingPhysics {
 
   jump() {
     if (this.lost) return false;
+    if (this.perch) return this.pointLaunch();
     if (!this.grounded) return false;
     this.grounded = false;
     this.pos.y += 0.06;
@@ -596,7 +615,7 @@ export class SwingPhysics {
   }
 
   boost() {
-    if (this.lost) return false;
+    if (this.lost || this.perch) return false;
     if (this.energy < 0.2) return false;
     this.energy = Math.max(0, this.energy - 0.2);
     this.vel.x -= Math.sin(this.yaw) * 11;
@@ -626,9 +645,7 @@ export class SwingPhysics {
     for (let index = 0; index < count && !this.lost; index += 1) this.integrate(h, input);
     if (
       ![this.pos.x, this.pos.y, this.pos.z, this.vel.x, this.vel.y, this.vel.z].every(Number.isFinite) ||
-      this.pos.y < -45 || this.pos.y > this.bounds.maxY + 100 ||
-      this.pos.x < this.bounds.minX - 50 || this.pos.x > this.bounds.maxX + 50 ||
-      this.pos.z < this.bounds.minZ - 50 || this.pos.z > this.bounds.maxZ + 50
+      this.pos.y < -45 || this.pos.y > this.bounds.maxY + 100
     ) this.reset();
     return this.snapshot();
   }
@@ -636,11 +653,27 @@ export class SwingPhysics {
   integrate(dt, input) {
     this.time += dt;
     this.yaw += input.turn * dt * 1.5;
+    if(this.perch) {
+      const {roof}=this.perch, before=copy(this.pos);
+      const sin=Math.sin(this.yaw), cos=Math.cos(this.yaw), drag=Math.exp(-dt*1.65);
+      this.vel.x=(this.vel.x+(-sin*input.forward+cos*input.strafe)*39*dt)*drag;
+      this.vel.z=(this.vel.z+(-cos*input.forward-sin*input.strafe)*39*dt)*drag;
+      this.vel.y=0;
+      this.limitSpeed();
+      this.move({x:clamp(this.pos.x+this.vel.x*dt,roof.minX,roof.maxX)-this.pos.x,y:0,z:clamp(this.pos.z+this.vel.z*dt,roof.minZ,roof.maxZ)-this.pos.z});
+      this.pos.y=this.perch.y;
+      // Use actual movement so pushing against an edge does not keep the legs running.
+      this.vel={x:(this.pos.x-before.x)/dt,y:0,z:(this.pos.z-before.z)/dt};
+      this.distanceTravelled+=Math.hypot(this.pos.x-before.x,this.pos.z-before.z);
+      this.grounded=true;
+      this.energy=Math.min(1,this.energy+dt*.23);
+      return;
+    }
     if(this.pointZip) {
       const before=copy(this.pos);
       if(this.updatePointZip(dt)) {
         this.distanceTravelled+=Math.hypot(this.pos.x-before.x,this.pos.z-before.z);
-        this.resolveGround();this.enforceBounds();return;
+        this.resolveGround();return;
       }
     }
     if (input.swingHeld) this.maintainHeldSwing(input.swingTarget);
@@ -704,7 +737,6 @@ export class SwingPhysics {
     if (this.fatalGround) { this.resolveGround(); if (this.lost) return; }
     this.constrainRope();
     this.resolveGround();
-    this.enforceBounds();
     this.updateTetherState();
     if (this.grounded) { this.soarUntil = -Infinity; this.wallRun = null; this.vaultUntil = -Infinity; }
     this.distanceTravelled += Math.hypot(this.pos.x - before.x, this.pos.z - before.z);
@@ -767,7 +799,7 @@ export class SwingPhysics {
     for (let pass = 0; pass < 3; pass += 1) {
       if (length(delta) < 1e-8) break;
       let nearest = null;
-      for (const building of this.buildings) {
+      for (const collection of [this.buildings, this.rooftopObstacles]) for (const building of collection) {
         const hit = sweepBox(this.pos, delta, building);
         if (hit && (!nearest || hit.fraction < nearest.fraction)) nearest = { ...hit, box: building };
       }
@@ -855,7 +887,7 @@ export class SwingPhysics {
 
   resolveGround() {
     if (this.vel.y <= 0) {
-      for (const roof of this.buildings) {
+      for (const collection of [this.buildings, this.rooftopObstacles]) for (const roof of collection) {
         if (
           this.pos.x > roof.minX && this.pos.x < roof.maxX &&
           this.pos.z > roof.minZ && this.pos.z < roof.maxZ &&
@@ -867,10 +899,12 @@ export class SwingPhysics {
         }
       }
     }
-    if (this.pos.y <= FOOT_CLEARANCE) {
-      this.recordImpact({ x: 0, y: 1, z: 0 }, 'ground');
-      this.pos.y = FOOT_CLEARANCE;
-      if (this.fatalGround) {
+    const overWater = this.island && (this.pos.x < this.island.minX || this.pos.x > this.island.maxX || this.pos.z < this.island.minZ || this.pos.z > this.island.maxZ);
+    const surface = overWater ? this.waterLevel : 0;
+    if (this.pos.y <= surface + FOOT_CLEARANCE) {
+      this.recordImpact({ x: 0, y: 1, z: 0 }, overWater ? 'water' : 'ground');
+      this.pos.y = surface + FOOT_CLEARANCE;
+      if (this.fatalGround || overWater) {
         this.lost = true; this.grounded = true; this.release();
         this.vel = { x: 0, y: 0, z: 0 };
         return;
@@ -883,27 +917,14 @@ export class SwingPhysics {
     }
   }
 
-  enforceBounds() {
-    for (const axis of ['x', 'z']) {
-      const suffix = axis.toUpperCase();
-      const min = this.bounds[`min${suffix}`];
-      const max = this.bounds[`max${suffix}`];
-      if (this.pos[axis] < min - 50 || this.pos[axis] > max + 50) continue;
-      if (this.pos[axis] < min || this.pos[axis] > max) {
-        this.pos[axis] = clamp(this.pos[axis], min, max);
-        this.vel[axis] *= -0.2;
-        this.release();
-      }
-    }
-  }
-
   snapshot() {
     return {
       pos: copy(this.pos),
       vel: copy(this.vel),
       yaw: this.yaw,
-      traversalPhase: this.pointZip ? 'point-zip' : this.grounded ? 'grounded' : this.wallRun ? 'wall-run' : this.time < this.vaultUntil ? 'vault' : this.anchor ? (this.time - this.attachedAt < .18 ? 'catch' : 'swing') : this.time < this.soarUntil ? 'soar' : 'air',
+      traversalPhase: this.perch ? 'perched' : this.pointZip ? 'point-zip' : this.grounded ? 'grounded' : this.wallRun ? 'wall-run' : this.time < this.vaultUntil ? 'vault' : this.anchor ? (this.time - this.attachedAt < .18 ? 'catch' : 'swing') : this.time < this.soarUntil ? 'soar' : 'air',
       grounded: this.grounded,
+      perched: !!this.perch,
       lost: this.lost,
       anchor: this.anchor ? { ...this.anchor } : null,
       ropeLength: this.ropeLength,

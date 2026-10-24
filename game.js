@@ -20,7 +20,7 @@ const held = code => keys.has(code) || touchKeys.has(code);
 const webControlLabel = () => matchMedia('(max-width:760px), (pointer:coarse)').matches ? 'Swing' : 'Space';
 const preferences = { atmosphere: 'golden', quality: 'high', camera: 'chase', audio: false, reduceMotion: false };
 try { Object.assign(preferences, JSON.parse(localStorage.getItem('skystride.preferences') || '{}')); } catch { /* Private browsing still supports play. */ }
-let renderer, scene, camera, city, horse, physics, sun, ambient, fill, skyMaterial, cinematics;
+let renderer, scene, camera, city, horse, physics, sun, ambient, fill, sky, skyMaterial, cinematics;
 let started = false, paused = false, mode = 'express', delivery, elapsed = 0, running = false;
 let now = 0, toastTimeout, renderFrames = 0, previousTime = performance.now(), accumulator = 0;
 let frameSelectedAnchor = false, facingAnchor = null, viewYaw = 0, previewAge = 0;
@@ -66,7 +66,7 @@ function createSky() {
         gl_FragColor=vec4(color,1.);\n#include <tonemapping_fragment>\n#include <colorspace_fragment> }
     `,
   });
-  const sky = new THREE.Mesh(new THREE.SphereGeometry(2200, 32, 24), skyMaterial);
+  sky = new THREE.Mesh(new THREE.SphereGeometry(2200, 32, 24), skyMaterial);
   sky.frustumCulled = false; sky.renderOrder = -100; scene.add(sky);
   const glowCanvas = document.createElement('canvas'); glowCanvas.width = glowCanvas.height = 128;
   const context = glowCanvas.getContext('2d');
@@ -319,7 +319,8 @@ function currentSteer() { return THREE.MathUtils.clamp(Number(held('ArrowLeft') 
 function jumpAction() {
   if (!started || paused || anyDialog() || physics.lost) return;
   physics.viewYaw = travelIntent(physics.vel, physics.yaw, currentSteer());
-  physics.contextualJump(travelIntent(physics.vel, physics.yaw, 0), pointTarget); autoAttachTime = 0;
+  const jumped = physics.contextualJump(travelIntent(physics.vel, physics.yaw, 0), pointTarget); autoAttachTime = 0;
+  if (jumped && physics.pointZip) tone(380, .12);
 }
 function attachLedge(candidate) {
   physics.viewYaw = travelIntent(physics.vel, physics.yaw, currentSteer());
@@ -328,6 +329,7 @@ function attachLedge(candidate) {
 function beginSwing() {
   if (!started || paused || anyDialog()) return;
   frameSelectedAnchor = false;
+  if (physics.perch) { toast('SHIFT to launch from your perch.', 1600); return; }
   if (attachLedge(undefined)) { tone(170, .08); autoAttachTime = 0; } else { autoAttachTime = 1.4; toast(physics.grounded ? 'No rooftop in reach. Jump with SHIFT and hold SPACE.' : 'Keep holding — waiting for a reachable ledge.', 1700); }
 }
 function setupEvents() {
@@ -421,6 +423,7 @@ function setupEvents() {
 
 function updatePhysics(dt) {
   if (physics.lost) return { turn: 0, forward: 0 };
+  const wasPerched = !!physics.perch;
   const steer = currentSteer();
   const turn = physics.grounded ? 0 : steer, reel = 0;
   if (physics.grounded) physics.yaw = panView(physics.yaw, () => false, dt, -steer);
@@ -433,6 +436,7 @@ function updatePhysics(dt) {
   // Steering brings the optional look offset back behind the horse.
   if (Math.abs(steer) > .05) orbit *= Math.exp(-dt * 4);
     physics.step(dt, { turn, forward, strafe, reel, swingHeld: held('Space'), swingTarget: undefined, boost: false });
+  if (!wasPerched && physics.perch) tone(180, .09);
   if (physics.lost) { loseRun(); return { turn: 0, forward: 0 }; }
   if ((physics.attachmentCount || 0) !== lastAttachmentCount) { lastAttachmentCount = physics.attachmentCount || 0; ropeRipple = 1; tone(190, .065); }
   if (autoAttachTime > 0 && held('Space')) { autoAttachTime -= dt; if (attachLedge(undefined)) autoAttachTime = 0; }
@@ -458,13 +462,13 @@ function updateHorse(dt, input) {
   } else {
     position = physics.pos; speed = Math.hypot(physics.vel.x, physics.vel.z); grounded = physics.grounded; swinging = !!physics.anchor; verticalSpeed = physics.vel.y;
     const pitchGoal = grounded ? 0 : physics.wallRun ? -.8 : THREE.MathUtils.clamp(-physics.vel.y * .008, -.32, .3);
-    horse.group.rotation.x = THREE.MathUtils.damp(horse.group.rotation.x, pitchGoal, 4, dt);
+    horse.group.rotation.x = grounded ? 0 : THREE.MathUtils.damp(horse.group.rotation.x, pitchGoal, 4, dt);
     horse.group.rotation.y = physics.grounded ? physics.yaw : travelIntent(physics.vel, physics.yaw, 0);
-    horse.group.rotation.z = THREE.MathUtils.damp(horse.group.rotation.z, -input.turn * (preferences.reduceMotion ? .08 : .18 + feel.swing * .12), 5, dt);
+    horse.group.rotation.z = grounded ? 0 : THREE.MathUtils.damp(horse.group.rotation.z, -input.turn * (preferences.reduceMotion ? .08 : .18 + feel.swing * .12), 5, dt);
   }
   horse.group.position.set(position.x, position.y - 2.2, position.z);
   horsePosition.set(position.x, position.y, position.z);
-  horse.update(dt, { feel, reduceMotion: preferences.reduceMotion, hanging: !started, time: now, speed, grounded, swinging, turn: input.turn, verticalSpeed, tension: started ? physics.tension || 0 : .5, stretch: started ? physics.stretch || 0 : 0 });
+  horse.update(dt, { feel, reduceMotion: preferences.reduceMotion, hanging: !started, time: now, speed, grounded, perched: started && !!physics.perch, swinging, turn: input.turn, verticalSpeed, tension: started ? physics.tension || 0 : .5, stretch: started ? physics.stretch || 0 : 0 });
   if (!started) {
     horse.group.updateMatrixWorld(true);
     horse.hangingAttachment.getWorldPosition(tetherStart);
@@ -551,6 +555,7 @@ function updateCamera(dt) {
     camera.position.y = Math.max(camera.position.y, 2.7);
   }
   camera.lookAt(cameraTarget); camera.updateMatrixWorld(true);
+  sky.position.copy(camera.position);
   if (renderFrames % 8 === 0) { sun.position.set(horsePosition.x - 150, horsePosition.y + 105, horsePosition.z + 85); sun.target.position.copy(horsePosition); }
 }
 function updateRope() {
@@ -604,7 +609,7 @@ function updateUI() {
   $('altitude').textContent = Math.round(horsePosition.y).toString();
   $('energy-bar').style.width = `${physics.energy * 100}%`;
   const active = physics.anchor;
-  $('flight-state').textContent = physics.lost ? 'Run over' : physics.grounded ? 'On a rooftop' : active ? 'Swinging' : physics.vel.y > 2 ? 'Soaring' : 'Falling';
+  $('flight-state').textContent = physics.lost ? 'Run over' : physics.perch ? 'Perched' : physics.grounded ? 'On a rooftop' : active ? 'Swinging' : physics.vel.y > 2 ? 'Soaring' : 'Falling';
   $('tether-status').textContent = !started ? 'Ready when you are' : physics.lost ? 'R to try again' : active ? `${Math.round((physics.tension || 0) * 100)}% tension` : physics.grounded ? 'SHIFT to jump' : 'Ready to swing';
   $('tension-bar').style.width = `${Math.min(1, physics.tension || 0) * 100}%`;
   const lowAltitude = started && !physics.lost && !physics.grounded && horsePosition.y < 20;
@@ -617,9 +622,16 @@ function updateUI() {
   $('jump-action').textContent = action.label;
   $('jump-action').setAttribute('aria-label', action.label);
   $('jump-action').disabled = action.kind === 'wait';
-  const anchor = pointTarget?.staging || null;
+  const anchor = pointTarget?.anchor || null;
   const anchorNumber = anchor ? city.anchors.findIndex(a => a.x === anchor.x && a.y === anchor.y && a.z === anchor.z) + 1 : 0;
   updateWebTarget($('web-target'), $('web-target-state'), $('web-target-distance'), { started, anchor, position: physics.pos, attached: !!active, anchorNumber });
+  const district = physics.pos.z < -650 ? 'Herald Square' : physics.pos.z < -250 ? 'Midtown South' : 'Midtown West';
+  $('district').textContent = district;
+}
+// Track the physical ledge, not the elevated waypoint used by the zip approach.
+// Reproject each frame with the current camera, independently of text HUD updates.
+function updateLedgeMarker() {
+  const anchor = pointTarget?.anchor || null;
   if (started && anchor) {
     projected.set(anchor.x, anchor.y, anchor.z).project(camera);
     const occluded = cameraClearance(camera.position, anchor, city.buildings) < 1;
@@ -628,28 +640,58 @@ function updateUI() {
     $('anchor-marker').classList.toggle('hidden', !visible);
     if (visible) { $('anchor-marker').style.left = `${(projected.x * .5 + .5) * 100}%`; $('anchor-marker').style.top = `${(-projected.y * .5 + .5) * 100}%`; $('anchor-label').textContent = 'Zip to point'; if (occluded) $('anchor-label').textContent += ' · Behind building'; }
   } else $('anchor-marker').classList.add('hidden');
-  const district = physics.pos.z < -650 ? 'Herald Square' : physics.pos.z < -250 ? 'Midtown South' : 'Midtown West';
-  $('district').textContent = district; $('map-coordinates').textContent = district;
-  drawMinimap();
 }
 function drawMinimap() {
-  const map = $('minimap'), ctx = map.getContext('2d'), scale = .6, width = map.width, height = map.height;
-  const pos = started ? physics.pos : city.spawn;
-  ctx.clearRect(0, 0, width, height); ctx.fillStyle = '#eee6d7'; ctx.fillRect(0, 0, width, height);
+  if (!started) return;
+  const map = $('minimap'), ctx = map.getContext('2d');
+  const size = 192, center = size / 2, radius = center - 5, scale = .32;
+  const pos = physics.pos;
+  ctx.setTransform(map.width / size, 0, 0, map.height / size, 0, 0);
+  ctx.clearRect(0, 0, size, size);
+  ctx.save();
+  ctx.beginPath(); ctx.arc(center, center, radius, 0, Math.PI * 2); ctx.clip();
+  ctx.fillStyle = '#244653f5'; ctx.fillRect(0, 0, size, size);
+  const coast = city.island;
+  ctx.fillStyle = '#112630ed';
+  ctx.fillRect(center + (coast.minX-pos.x)*scale, center + (coast.minZ-pos.z)*scale,
+    (coast.maxX-coast.minX)*scale, (coast.maxZ-coast.minZ)*scale);
+  ctx.strokeStyle = '#b1cecb88'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(center + (coast.minX-pos.x)*scale, center + (coast.minZ-pos.z)*scale,
+    (coast.maxX-coast.minX)*scale, (coast.maxZ-coast.minZ)*scale);
   for (const b of city.buildings) {
-    const x = width / 2 + (b.minX - pos.x) * scale, z = height / 2 + (b.minZ - pos.z) * scale;
-    if (x > width || z > height || x + (b.maxX - b.minX) * scale < 0 || z + (b.maxZ - b.minZ) * scale < 0) continue;
-    ctx.fillStyle = b.height > 80 ? '#a6b4a1' : '#c9cfba'; ctx.fillRect(x, z, (b.maxX - b.minX) * scale, (b.maxZ - b.minZ) * scale);
+    const x = center + (b.minX - pos.x) * scale, z = center + (b.minZ - pos.z) * scale;
+    const w = (b.maxX - b.minX) * scale, h = (b.maxZ - b.minZ) * scale;
+    if (x > size || z > size || x + w < 0 || z + h < 0) continue;
+    ctx.fillStyle = b.height > 80 ? '#5e7b86' : '#3b5864';
+    ctx.fillRect(x, z, w, h);
+    ctx.strokeStyle = '#a1c0ca22'; ctx.lineWidth = .6; ctx.strokeRect(x, z, w, h);
   }
+  const shade = ctx.createRadialGradient(center, center, 45, center, center, radius);
+  shade.addColorStop(0, '#091a2400'); shade.addColorStop(1, '#091a2480');
+  ctx.fillStyle = shade; ctx.fillRect(0, 0, size, size);
   if (running) {
-    const next = deliveryTarget(delivery);
-    ctx.strokeStyle = '#a36650'; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(width / 2, height / 2);
-    const x = width / 2 + (next.x - pos.x) * scale, z = height / 2 + (next.z - pos.z) * scale;
-    ctx.lineTo(x, z); ctx.stroke(); ctx.setLineDash([]);
-    ctx.beginPath(); ctx.arc(x, z, 5, 0, Math.PI * 2); ctx.stroke();
+    const target = deliveryTarget(delivery);
+    const dx = (target.x - pos.x) * scale, dz = (target.z - pos.z) * scale;
+    const distance = Math.hypot(dx, dz), factor = Math.min(1, (radius - 14) / Math.max(distance, 1));
+    ctx.save(); ctx.translate(center + dx * factor, center + dz * factor);
+    ctx.strokeStyle = '#ffe2a0'; ctx.fillStyle = '#ffe2a0'; ctx.lineWidth = 1.5;
+    ctx.shadowColor = '#ffd78c'; ctx.shadowBlur = 8;
+    ctx.beginPath(); ctx.moveTo(0, -5); ctx.lineTo(5, 0); ctx.lineTo(0, 5); ctx.lineTo(-5, 0); ctx.closePath(); ctx.fill();
+    if (distance > radius - 14) {
+      ctx.rotate(Math.atan2(dz, dx));
+      ctx.beginPath(); ctx.moveTo(8, -3); ctx.lineTo(11, 0); ctx.lineTo(8, 3); ctx.stroke();
+    } else { ctx.beginPath(); ctx.arc(0, 0, 9, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.restore();
   }
-  ctx.strokeStyle = '#657b6840'; ctx.beginPath(); ctx.arc(width / 2, height / 2, 20, 0, Math.PI * 2); ctx.stroke();
-  ctx.save(); ctx.translate(width / 2, height / 2); ctx.rotate(-physics.yaw); ctx.fillStyle = '#a36650'; ctx.shadowColor = '#a36650'; ctx.shadowBlur = 8; ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(4, 5); ctx.lineTo(0, 3); ctx.lineTo(-4, 5); ctx.closePath(); ctx.fill(); ctx.restore();
+  ctx.save(); ctx.translate(center, center); ctx.rotate(-physics.yaw);
+  ctx.shadowColor = '#000'; ctx.shadowBlur = 5; ctx.lineWidth = 2;
+  ctx.strokeStyle = '#fff7ec'; ctx.fillStyle = '#ff503e';
+  ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(5, 6); ctx.lineTo(0, 3); ctx.lineTo(-5, 6); ctx.closePath(); ctx.stroke(); ctx.fill(); ctx.restore();
+  ctx.restore();
+  ctx.strokeStyle = '#e9f5f06b'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(center, center, radius, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#f5f6ed'; ctx.font = '600 9px Arial'; ctx.textAlign = 'center';
+  ctx.fillText('N', center, 17);
 }
 
 function enableAudio() {
@@ -706,6 +748,8 @@ function frame(time) {
 
   if (time - lastUI > 75) { updateUI(); updateAudio(); lastUI = time; }
   cinematics.setSpeedBurst(preferences.reduceMotion ? 0 : snapBurst());
+  updateLedgeMarker();
+  drawMinimap();
   cinematics.render(scene); renderFrames++;
 }
 boot();

@@ -148,11 +148,11 @@ export async function createHorse() {
     clock += dt;
     for (const phase of Object.keys(phasePose)) {
       const target = state.hanging || state.grounded ? 0 : state.feel?.[phase] || 0;
-      phasePose[phase] = state.hanging ? 0 : THREE.MathUtils.damp(phasePose[phase], target, 12, dt);
+      phasePose[phase] = state.hanging || state.perched ? 0 : THREE.MathUtils.damp(phasePose[phase], target, 12, dt);
     }
     const accent = state.reduceMotion ? .35 : 1;
-    speed = THREE.MathUtils.damp(speed, Math.max(0, state.speed || 0), 5, dt);
-    flight = THREE.MathUtils.damp(flight, state.grounded ? 0 : 1, state.grounded ? 8 : 5, dt);
+    speed = state.perched ? Math.max(0, state.speed || 0) : THREE.MathUtils.damp(speed, Math.max(0, state.speed || 0), 5, dt);
+    flight = state.perched ? 0 : THREE.MathUtils.damp(flight, state.grounded ? 0 : 1, state.grounded ? 8 : 5, dt);
     const ropeTension = THREE.MathUtils.clamp(state.tension || 0, 0, 1);
     const ropeExtension = THREE.MathUtils.clamp((state.stretch || 0) / 6, 0, 1);
     tension = THREE.MathUtils.damp(tension, ropeTension, 5, dt);
@@ -189,7 +189,7 @@ export async function createHorse() {
     // These clips have identical duration and phase, avoiding a leg-position
     // jump as the airborne/grounded weights change.
     actions.airborne.setEffectiveTimeScale(canterRate);
-    actions.idle.setEffectiveTimeScale(0.85);
+    actions.idle.setEffectiveTimeScale(state.perched && speed <= .15 ? 0 : .85);
     mixer.update(dt);
     if (state.hanging) {
       hangingNeck ??= neck.quaternion.clone();

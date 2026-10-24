@@ -30,3 +30,16 @@ test('cleanup does not trigger release and reduced motion removes camera accents
   assert.equal(traversalFeel(p).release,0);
   assert.equal(traversalFeel(p).phase,'air');
 });
+
+test('zip and perch arrival have distinct camera accents that respect reduced motion', () => {
+  const p = new SwingPhysics();
+  p.pointZip = { stage: 0 }; p.grounded = false;
+  assert.equal(traversalFeel(p).phase, 'point-zip');
+  assert.ok(traversalFeel(p).fov > 0);
+  p.pointZip = null; p.perch = {...p.pos}; p.grounded = true; p.perchedAt = p.time;
+  assert.equal(traversalFeel(p).phase, 'perched');
+  assert.ok(traversalFeel(p).fov < 0);
+  for (const key of ['distance', 'height', 'fov', 'lookAhead']) assert.equal(Math.abs(traversalFeel(p, true)[key]), 0);
+  p.time += .3;
+  assert.equal(traversalFeel(p).arrival, 0);
+});

@@ -1,8 +1,9 @@
 // Delivery rules are separate from traversal: only a landing inside the roof pad counts.
 export function createDelivery(buildings, spawn) {
   const roofs = buildings.filter(b => b.maxX - b.minX >= 18 && b.maxZ - b.minZ >= 18 && b.height >= 28 && b.height <= 105)
-    .map(b => ({ x: (b.minX + b.maxX) / 2 + (b.maxX - b.minX) * .28, y: b.height + 2.2,
-      z: (b.minZ + b.maxZ) / 2 + (b.maxZ - b.minZ) * .28, radius: Math.min(6, (b.maxX - b.minX) * .18, (b.maxZ - b.minZ) * .18) }));
+    .map(b => ({ x: (b.minX + b.maxX) / 2 + (b.maxX - b.minX) * .28, y: (b.roofHeight ?? b.height) + 2.2,
+      z: (b.minZ + b.maxZ) / 2 + (b.maxZ - b.minZ) * .28, obstacles: b.rooftopObstacles || [], radius: Math.min(6, (b.maxX - b.minX) * .18, (b.maxZ - b.minZ) * .18) }))
+    .filter(p => !p.obstacles.some(o => p.x > o.minX-2 && p.x < o.maxX+2 && p.z > o.minZ-2 && p.z < o.maxZ+2));
   if (roofs.length < 3) throw new Error('Pony Express needs three accessible rooftops.');
   const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
   const pickup = roofs.reduce((best, roof) => distance(roof, spawn) < distance(best, spawn) ? roof : best);
