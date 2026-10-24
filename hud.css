@@ -138,3 +138,14 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
 
 
 #finish-dialog.menu-card h2{font:400 34px/1.12 'Bangers',Impact,sans-serif;letter-spacing:1px;margin:0 0 24px;text-align:center}
+
+/* North-up radar: only the map returns to the otherwise minimal lower HUD. */
+.playing .bottom-hud{display:block;position:absolute;left:max(24px,env(safe-area-inset-left));bottom:max(24px,env(safe-area-inset-bottom));right:auto;pointer-events:none;z-index:5}
+.bottom-hud .telemetry,.bottom-hud .controls-strip{display:none!important}
+#minimap-wrap{display:block;width:192px;height:192px;padding:0;border:0;border-radius:50%;background:transparent;box-shadow:0 5px 24px #0004;backdrop-filter:none;overflow:hidden}
+#minimap{display:block;width:100%;height:100%;margin:0;border:0;border-radius:50%}
+@media(max-width:760px),(pointer:coarse){
+ .playing .bottom-hud{left:max(16px,env(safe-area-inset-left));bottom:calc(max(24px,env(safe-area-inset-bottom)) + 124px)}
+ #minimap-wrap{width:128px;height:128px}
+}
+@media(max-height:500px){#minimap-wrap{width:104px;height:104px}}

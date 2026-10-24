@@ -2,6 +2,17 @@
 
 A standalone browser game about a horse swinging through a procedural Manhattan-inspired city. Three.js, plain JavaScript and CSS; no bundler, backend, database or API key required. Runtime libraries and game assets are included.
 
+## City size
+
+The city grid spans 990 m wide and 2,920 m long: twice the original area,
+expanded northward at the same block scale (13 columns × 40 rows). The original
+neighborhood and spawn remain in place. Streets, riverfront, traffic and the
+background skyline extend with the layout. Water surrounds all four coasts;
+there are no invisible horizontal boundaries, and falling into water ends the run.
+The circular minimap shows the shoreline, horse heading, and delivery objective.
+Instanced geometry is split into
+576 m north–south sections for independent camera culling.
+
 ## Local development
 
 Use Node.js 20 or newer. With mise, run commands as `mise exec -- npm ...` (the Node version is pinned in `.tool-versions`). No dependency installation is needed.
@@ -32,6 +43,10 @@ Hold **Space / Swing** to chain forward swings automatically; release to let go.
 zips to a marked perch within 12° of travel direction and a clear approach;
 without a perch it performs a short air zip. Near perch arrival it becomes
 **Launch**. Mobile has exactly two action buttons: **Swing** and **Jump/Zip/Launch**.
+After a ledge zip, the horse can run around the rooftop, with movement stopped
+safely at its edges. **Shift / Launch** jumps off in the chosen direction. Swing
+does not pull it off the ledge. The legs stop immediately on arrival. The zip accelerates into a short settling approach,
+with a brief camera accent on arrival (disabled by Reduce motion).
 **C** dives in free flight. The camera follows travel direction; steering
 recenters any optional look offset. **Right-drag / drag the open scene on touch**
 looks around; **Q or double-tap** recenters. Esc pauses. Looking does not choose

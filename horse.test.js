@@ -235,3 +235,20 @@ test('catch and soar poses differ on the real rig and remain stable through paus
   advance(soarHorse,2,{grounded:true,speed:0});
   assert.ok(snapshot(soarHorse).every(Number.isFinite));
 });
+
+
+test('zip arrival immediately stops the legs, while rooftop running still animates', async t => {
+  const horse=await horseFixture(t);
+  advance(horse,.6,{grounded:false,speed:60,feel:{soar:1}});
+  const standing={grounded:true,perched:true,speed:0};
+  horse.update(1/60,standing);
+  const landed=feet.map(name=>positionOf(horse,name));
+  advance(horse,.4,standing);
+  feet.forEach((name,i)=>assert.ok(positionOf(horse,name).distanceTo(landed[i])<1e-6, 'hooves must stay still immediately after arrival'));
+  advance(horse,.3,{...standing,speed:5});
+  assert.ok(feet.some((name,i)=>positionOf(horse,name).distanceTo(landed[i])>.01), 'rooftop movement animates the gait');
+  horse.update(1/60,standing);
+  const stopped=feet.map(name=>positionOf(horse,name));
+  advance(horse,.3,standing);
+  feet.forEach((name,i)=>assert.ok(positionOf(horse,name).distanceTo(stopped[i])<1e-6));
+});

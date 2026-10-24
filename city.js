@@ -1,7 +1,21 @@
 import * as THREE from './vendor/three.module.js';
 
+// Forty north–south rows at the original width: twice the previous playable area.
+export const CITY_LAYOUT = Object.freeze({
+  blockSize: 72, minColumn: -6, maxColumn: 6, minRow: -35, maxRow: 4,
+  minX: -477, maxX: 513, minZ: -2560, maxZ: 360,
+});
+
 // All architecture and surface artwork are generated locally for this game.
 export function createCity(scene) {
+  const layout = CITY_LAYOUT;
+  const streetMinZ = layout.minRow * layout.blockSize;
+  const streetMaxZ = (layout.maxRow + 1) * layout.blockSize;
+  const centerZ = (streetMinZ + streetMaxZ) / 2;
+  const island = {minX:-550,maxX:550,minZ:layout.minZ-40,maxZ:layout.maxZ+50};
+  const islandCenterZ = (island.minZ + island.maxZ) / 2;
+  const groundLength = island.maxZ - island.minZ;
+  const islandWidth = island.maxX - island.minX;
   let state = 714831;
   const random = () => { state = (Math.imul(1664525, state) + 1013904223) >>> 0; return state / 4294967296; };
   const range = (a, b) => a + random() * (b - a);
@@ -9,6 +23,7 @@ export function createCity(scene) {
   const group = new THREE.Group();
   group.name = 'Manhattan — procedural city';
   scene.add(group);
+  const rooftopObstacles = [];
   const buildings = [], anchors = [], batches = new Map();
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
@@ -36,7 +51,7 @@ export function createCity(scene) {
   const storefrontFrame = standard('#464b49', .56, .45), awning = standard('#ffffff');
 
   function add(geometry, material, position, scale, rotation = null, tint = null) {
-    const key = `${geometry.uuid}/${material.uuid}`;
+    const key = `${geometry.uuid}/${material.uuid}/${Math.floor(position[2] / 576)}`;
     let batch = batches.get(key);
     if (!batch) { batch = { geometry, material, matrices: [], colors: [] }; batches.set(key, batch); }
     dummy.position.set(...position); dummy.scale.set(...scale);
@@ -56,7 +71,7 @@ export function createCity(scene) {
     dummy.position.copy(start.add(end).multiplyScalar(.5));
     dummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
     dummy.scale.set(radius, direction.length(), radius); dummy.updateMatrix();
-    const key = `${cylinder.uuid}/${mat.uuid}`;
+    const key = `${cylinder.uuid}/${mat.uuid}/${Math.floor(dummy.position.z / 576)}`;
     let batch = batches.get(key);
     if (!batch) { batch = { geometry: cylinder, material: mat, matrices: [], colors: [] }; batches.set(key, batch); }
     batch.matrices.push(dummy.matrix.clone()); batch.colors.push(null);
@@ -305,13 +320,23 @@ export function createCity(scene) {
   }
   pavementMaterial(asphalt, false); pavementMaterial(sidewalk, true);
 
-  // Pavement, sidewalks, avenue markings and the river beyond the west side.
-  cube(asphalt, 0, -.25, -360, 1100, .5, 1700);
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(470, 2000, 1, 1), new THREE.MeshStandardMaterial({ color: '#6c8e93', roughness: .26, metalness: .45 }));
-  water.rotation.x = -Math.PI / 2; water.position.set(-805, -.18, -420); water.receiveShadow = true; group.add(water);
-  cube(stone, -561, .4, -360, 18, .8, 1700);
-  cube(sidewalk, -544, .15, -360, 16, .3, 1700);
-  for (let z = -1120; z < 470; z += 20) {
+  // A continuous water surface surrounds the long, narrow island on every side.
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(16000, 16000), new THREE.MeshStandardMaterial({ color: '#6c8e93', roughness: .3, metalness: .45 }));
+  water.name = 'Surrounding island water';
+  water.rotation.x = -Math.PI / 2; water.position.set(0, -1.2, islandCenterZ); water.receiveShadow = true; group.add(water);
+  cube(asphalt, 0, -1, islandCenterZ, islandWidth, 2, groundLength);
+  // Continuous stone seawalls and a promenade close off the ends of the streets.
+  for (const x of [island.minX, island.maxX]) {
+    cube(stone, x, -.3, islandCenterZ, 3, 3, groundLength + 3);
+    cube(sidewalk, x + (x < 0 ? 9 : -9), .15, islandCenterZ, 15, .3, groundLength);
+    cube(paleStone, x, 1.23, islandCenterZ, 3.6, .16, groundLength + 3);
+  }
+  for (const z of [island.minZ, island.maxZ]) {
+    cube(stone, 0, -.3, z, islandWidth, 3, 3);
+    cube(sidewalk, 0, .15, z + (z === island.minZ ? 9 : -9), islandWidth - 6, .3, 15);
+    cube(paleStone, 0, 1.23, z, islandWidth + 3, .16, 3.6);
+  }
+  for (let z = island.minZ + 20; z < island.maxZ - 20; z += 20) {
     cube(whitePaint, -518, .018, z, .15, .025, 10);
     cube(yellowPaint, -530, .018, z, .18, .025, 10);
   }
@@ -338,47 +363,52 @@ export function createCity(scene) {
     add(cylinder, darkMetal, [x, .27, z], [.28, .54, .28]);
   }
   function rooftop(x, z, w, d, h, old, style = 0) {
+    const roofCube = (mat, cx, cy, cz, cw, ch, cd) => {
+      cube(mat, cx, cy, cz, cw, ch, cd);
+      rooftopObstacles.push({minX:cx-cw/2,maxX:cx+cw/2,minZ:cz-cd/2,maxZ:cz+cd/2,minY:cy-ch/2,height:cy+ch/2});
+    };
     const trim = old ? style === 3 ? terracotta : paleStone : style === 6 ? bronze : silver;
     cube(roof, x, h + .3, z, w + .3, .6, d + .3);
-    cube(trim, x, h + .8, z - d / 2, w + .6, .8, .45);
-    cube(trim, x, h + .8, z + d / 2, w + .6, .8, .45);
-    cube(trim, x - w / 2, h + .8, z, .45, .8, d);
-    cube(trim, x + w / 2, h + .8, z, .45, .8, d);
+    roofCube(trim, x, h + .8, z - d / 2, w + .6, .8, .45);
+    roofCube(trim, x, h + .8, z + d / 2, w + .6, .8, .45);
+    roofCube(trim, x - w / 2, h + .8, z, .45, .8, d);
+    roofCube(trim, x + w / 2, h + .8, z, .45, .8, d);
     const ox = x + w * (detail(x, z, 1) * .48 - .24), oz = z + d * (detail(x, z, 2) * .48 - .24);
     const equipment = Math.floor(detail(x, z, 3) * 3);
     if (equipment === 0) {
       // Paired cooling units, exposed fan housings and service conduits.
       for (const offset of [-2.5, 2.5]) {
-        cube(silver, ox, h + 1.1, oz + offset, Math.min(4, w * .2), 1.5, 3.7);
+        roofCube(silver, ox, h + 1.1, oz + offset, Math.min(4, w * .2), 1.5, 3.7);
         add(cylinder, darkMetal, [ox, h + 1.91, oz + offset], [1.05, .12, 1.05]);
       }
-      cube(silver, ox + 2, h + .85, oz, .4, .45, 8);
+      roofCube(silver, ox + 2, h + .85, oz, .4, .45, 8);
     } else if (equipment === 1) {
-      cube(trim, ox, h + 1.7, oz, w * .33, 2.8, d * .23);
-      cube(darkMetal, ox, h + 3.15, oz, w * .34, .15, d * .24);
-      for (let i = -2; i <= 2; i++) cube(darkMetal, ox + i * .7, h + 1.8, oz - d * .117, .3, 1.4, .1);
+      roofCube(trim, ox, h + 1.7, oz, w * .33, 2.8, d * .23);
+      roofCube(darkMetal, ox, h + 3.15, oz, w * .34, .15, d * .24);
+      for (let i = -2; i <= 2; i++) roofCube(darkMetal, ox + i * .7, h + 1.8, oz - d * .117, .3, 1.4, .1);
     } else {
-      cube(silver, ox, h + 1.15, oz, Math.min(4, w * .2), 1.7, Math.min(6, d * .22));
+      roofCube(silver, ox, h + 1.15, oz, Math.min(4, w * .2), 1.7, Math.min(6, d * .22));
       for (let i = 0; i < 3; i++) {
         const cx = x - w * .31 + i * 1.5;
-        cube(old ? terracotta : darkMetal, cx, h + 1.8, z - d * .31, .8, 2.8, .8);
-        cube(darkMetal, cx, h + 3.24, z - d * .31, 1, .16, 1);
+        roofCube(old ? terracotta : darkMetal, cx, h + 1.8, z - d * .31, .8, 2.8, .8);
+        roofCube(darkMetal, cx, h + 3.24, z - d * .31, 1, .16, 1);
       }
     }
     // Roofline accents are modest service structures within the original lot;
     // all traversable floors and anchor positions retain their original bounds.
     if (style === 2) {
       for (const side of [-1, 1]) {
-        cube(paleStone, x + side * w * .33, h + 1.3, z, .9, 2, d * .96);
-        cube(paleStone, x, h + 1.3, z + side * d * .33, w * .96, 2, .9);
+        roofCube(paleStone, x + side * w * .33, h + 1.3, z, .9, 2, d * .96);
+        roofCube(paleStone, x, h + 1.3, z + side * d * .33, w * .96, 2, .9);
       }
     } else if (style === 1 || style === 3) {
       const fx = x + w * .22;
-      cube(redBrick, fx, h + 1.25, z - d * .25, w * .28, 1.8, d * .24);
-      cube(darkMetal, fx, h + 2.21, z - d * .25, w * .3, .14, d * .26);
+      roofCube(redBrick, fx, h + 1.25, z - d * .25, w * .28, 1.8, d * .24);
+      roofCube(darkMetal, fx, h + 2.21, z - d * .25, w * .3, .14, d * .26);
     }
     if (old && w > 14 && random() > .44) {
       const tx = x - w * .24, tz = z + d * .22, th = h + 4;
+      rooftopObstacles.push({minX:tx-2.15,maxX:tx+2.15,minZ:tz-2.15,maxZ:tz+2.15,minY:h,height:th+5.4});
       for (const dx of [-1.3, 1.3]) for (const dz of [-1.3, 1.3]) pole(darkMetal, [tx + dx, h, tz + dz], [tx + dx * .8, th, tz + dz * .8], .1);
       add(cylinder, redBrick, [tx, th + 2, tz], [1.85, 4, 1.85]);
       add(cone, darkMetal, [tx, th + 4.7, tz], [2.15, 1.4, 2.15]);
@@ -458,7 +488,10 @@ export function createCity(scene) {
       }
       if (style === 6) for (let yy = 8.2; yy < h - 2; yy += 8.2) cube(bronze, x, yy, z, w + .14, .24, d + .14);
     }
+    const roofStart = rooftopObstacles.length;
     rooftop(x, z, w, d, h, style < 5, style);
+    buildings[buildings.length-1].roofHeight = h + .6;
+    buildings[buildings.length-1].rooftopObstacles = rooftopObstacles.slice(roofStart);
     for (const dx of [-1, 1]) for (const dz of [-1, 1]) anchors.push(new THREE.Vector3(x + dx * (w / 2 + .2), h + 1.2, z + dz * (d / 2 + .2)));
     // Awnings and storefront glass create a street-level scale.
     if (Math.abs(x) < 150) {
@@ -482,35 +515,38 @@ export function createCity(scene) {
     }
   }
 
-  for (let ix = -6; ix <= 6; ix++) {
-    for (let iz = -15; iz <= 4; iz++) {
-      const x = ix * 72 + 36, z = iz * 72 + 36;
-      cube(sidewalk, x, .12, z, 50, .24, 50);
-      // A pocket of park and mature trees opens the western skyline.
-      if ((ix === -4 || ix === -3) && iz >= -9 && iz <= -6) {
-        cube(parkGrass, x, .27, z, 45, .08, 45);
-        cube(limestone, x, .33, z, 3, .08, 45);
-        cube(limestone, x, .33, z, 45, .08, 3);
-        for (let i = 0; i < 8; i++) tree(x + range(-19, 19), z + range(-19, 19), range(1.1, 1.6));
-        continue;
-      }
-      const closeAvenue = Math.abs(x) < 42;
-      const style = Math.floor(random() * facades.length);
-      if (random() > .75 && !closeAvenue) {
-        const h = range(95, 180);
-        building(x, z, 43, 43, h * .67, style);
-        building(x, z, 32, 32, h, style);
-      } else if (random() > .58) {
-        building(x, z, 44, 43, range(closeAvenue ? 55 : 35, closeAvenue ? 110 : 125), style);
-      } else {
-        const base = range(closeAvenue ? 43 : 25, closeAvenue ? 78 : 80);
-        building(x - 11.4, z, 21.5, 44, base + range(0, 24), style);
-        building(x + 11.4, z, 21.5, 44, base + range(-8, 35), (style + 2) % facades.length);
-      }
-      if (Math.abs(x) < 190 && iz > -12) {
-        tree(x - 23, z - 13, range(.7, .95));
-        tree(x + 23, z + 12, range(.7, .95));
-        streetLamp(x - 24, z + 16, -1); streetLamp(x + 24, z - 16, 1);
+  // Generate the original neighborhood first so its seeded buildings stay put.
+  for (const [firstRow, lastRow] of [[-15, layout.maxRow], [layout.minRow, -16]]) {
+    for (let ix = layout.minColumn; ix <= layout.maxColumn; ix++) {
+      for (let iz = firstRow; iz <= lastRow; iz++) {
+        const x = ix * layout.blockSize + 36, z = iz * layout.blockSize + 36;
+        cube(sidewalk, x, .12, z, 50, .24, 50);
+        // A pocket of park and mature trees opens the western skyline.
+        if ((ix === -4 || ix === -3) && iz >= -9 && iz <= -6) {
+          cube(parkGrass, x, .27, z, 45, .08, 45);
+          cube(limestone, x, .33, z, 3, .08, 45);
+          cube(limestone, x, .33, z, 45, .08, 3);
+          for (let i = 0; i < 8; i++) tree(x + range(-19, 19), z + range(-19, 19), range(1.1, 1.6));
+          continue;
+        }
+        const closeAvenue = Math.abs(x) < 42;
+        const style = Math.floor(random() * facades.length);
+        if (random() > .75 && !closeAvenue) {
+          const h = range(95, 180);
+          building(x, z, 43, 43, h * .67, style);
+          building(x, z, 32, 32, h, style);
+        } else if (random() > .58) {
+          building(x, z, 44, 43, range(closeAvenue ? 55 : 35, closeAvenue ? 110 : 125), style);
+        } else {
+          const base = range(closeAvenue ? 43 : 25, closeAvenue ? 78 : 80);
+          building(x - 11.4, z, 21.5, 44, base + range(0, 24), style);
+          building(x + 11.4, z, 21.5, 44, base + range(-8, 35), (style + 2) % facades.length);
+        }
+        if (Math.abs(x) < 190 && (iz > -12 || (iz < -15 && iz > layout.minRow + 3))) {
+          tree(x - 23, z - 13, range(.7, .95));
+          tree(x + 23, z + 12, range(.7, .95));
+          streetLamp(x - 24, z + 16, -1); streetLamp(x + 24, z - 16, 1);
+        }
       }
     }
   }
@@ -533,16 +569,16 @@ export function createCity(scene) {
 
 
   // Intersections, crosswalks, lane dividers and traffic signals.
-  for (let ix = -6; ix <= 7; ix++) {
+  for (let ix = layout.minColumn; ix <= layout.maxColumn + 1; ix++) {
     const x = ix * 72;
-    for (let z = -1080; z < 360; z += 14) {
+    for (let z = streetMinZ; z < streetMaxZ; z += 14) {
       if (Math.abs(z / 72 - Math.round(z / 72)) < .2) continue;
       cube(yellowPaint, x - .21, .018, z, .11, .025, 6);
       cube(yellowPaint, x + .21, .018, z, .11, .025, 6);
       cube(whitePaint, x - 6, .018, z, .12, .025, 5);
       cube(whitePaint, x + 6, .018, z, .12, .025, 5);
     }
-    for (let iz = -15; iz <= 5; iz++) {
+    for (let iz = layout.minRow; iz <= layout.maxRow + 1; iz++) {
       const z = iz * 72;
       for (let dx = -9; dx <= 9; dx += 2.7) {
         cube(whitePaint, x + dx, .025, z - 13.3, 1.3, .025, 4.1);
@@ -550,7 +586,7 @@ export function createCity(scene) {
         cube(whitePaint, x - 13.3, .025, z + dx, 4.1, .025, 1.3);
         cube(whitePaint, x + 13.3, .025, z + dx, 4.1, .025, 1.3);
       }
-      if (Math.abs(x) < 180 && iz > -13) {
+      if (Math.abs(x) < 180 && (iz > -13 || (iz < -15 && iz > layout.minRow + 2))) {
         const sx = x + 12, sz = z + 12;
         pole(darkMetal, [sx, 0, sz], [sx, 6.8, sz], .11);
         pole(darkMetal, [sx, 6.8, sz], [sx - 8, 6.8, sz], .095);
@@ -560,7 +596,7 @@ export function createCity(scene) {
       }
     }
   }
-  for (let iz = -15; iz <= 5; iz++) {
+  for (let iz = layout.minRow; iz <= layout.maxRow + 1; iz++) {
     for (let x = -450; x < 500; x += 14) {
       if (Math.abs(x / 72 - Math.round(x / 72)) < .2) continue;
       cube(yellowPaint, x, .02, iz * 72, 5, .03, .14);
@@ -569,9 +605,9 @@ export function createCity(scene) {
 
   // Cars are low, correctly scaled silhouettes with windows, wheels and taxi signs.
   const vehicleColors = [taxiYellow, taxiYellow, standard('#c6c5bb', .35, .4), standard('#4b5254', .32, .4), standard('#77858b', .34, .4), standard('#815349', .4, .3)];
-  for (let i = 0; i < 280; i++) {
+  for (let i = 0; i < 560; i++) {
     const lane = Math.round(range(-5, 6)) * 72;
-    let x = lane + pick([-8, -3.5, 3.5, 8]), z = range(-1090, 340);
+    let x = lane + pick([-8, -3.5, 3.5, 8]), z = range(streetMinZ - 10, streetMaxZ - 20);
     if (Math.abs(z / 72 - Math.round(z / 72)) < .18) continue;
     const material = pick(vehicleColors);
     cube(material, x, .72, z, 1.95, .74, 4.6);
@@ -607,13 +643,18 @@ export function createCity(scene) {
     }
   }
 
-  // Distant buildings fill the horizon without expensive roof details.
+  // The distant mainland sits across the western channel, leaving open water
+  // beyond both tips instead of buildings floating beyond the northern streets.
+  cube(stone, -2150, -1, islandCenterZ, 1700, 2, groundLength + 900);
+  cube(sidewalk, -1300, -.3, islandCenterZ, 5, 3, groundLength + 900);
+  cube(stone, -1220, bridgeY, bridgeZ, 160, 2.4, 26);
+  // Distant buildings fill the mainland horizon without expensive roof details.
   for (let i = 0; i < 150; i++) {
-    const x = range(-700, 850), z = range(-1650, -1210), h = range(35, 160);
+    const x = range(-2700, -1370), z = range(island.minZ - 300, island.maxZ + 300), h = range(35, 160);
     cube(pick(facades), x, h / 2, z, range(17, 39), h, range(17, 35), '#ccd0cc');
   }
 
-  // Bake the scene to a small collection of GPU-instanced batches.
+  // Bake materials into north–south sections that can be culled independently.
   for (const batch of batches.values()) {
     const mesh = new THREE.InstancedMesh(batch.geometry, batch.material, batch.matrices.length);
     for (let i = 0; i < batch.matrices.length; i++) {
@@ -626,9 +667,9 @@ export function createCity(scene) {
   }
   const safeAnchors = anchors.filter(a => !buildings.some(b => a.x > b.minX && a.x < b.maxX && a.z > b.minZ && a.z < b.maxZ && a.y < b.height + .6));
   return {
-    buildings, anchors: safeAnchors,
+    buildings, rooftopObstacles, island, waterLevel: water.position.y, anchors: safeAnchors,
     spawn: new THREE.Vector3(0, 69, 50),
-    bounds: { minX: -477, maxX: 513, minZ: -1100, maxZ: 360 },
+    bounds: { minX: layout.minX, maxX: layout.maxX, minZ: layout.minZ, maxZ: layout.maxZ },
     update(_dt, time) { water.material.color.setHSL(.53, .13, .43 + Math.sin(time * .16) * .008); },
   };
 }

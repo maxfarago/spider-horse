@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDelivery, advanceDelivery } from './pony-express.js';
 import { SwingPhysics } from './physics.js';
-import { createCity } from './city.js';
+import { createCity, CITY_LAYOUT } from './city.js';
 import { Scene, Raycaster, Vector3 } from './vendor/three.module.js';
 
 const stepFor = (physics, seconds, input = {}) => {
@@ -187,16 +187,18 @@ test('boost consumes a bounded reserve and recharges without producing unlimited
   assert.equal(physics.energy, 1);
 });
 
-test('large frame gaps and mixed controls stay finite and the world boundary recovers escapes', () => {
+test('large frame gaps stay finite, horizontal travel is unrestricted, and invalid states recover', () => {
   const physics = new SwingPhysics({ bounds: { minX: -50, maxX: 50, minZ: -50, maxZ: 100 } });
   for (let frame = 0; frame < 1000; frame += 1) {
     physics.step(frame % 13 === 0 ? 2 : 1 / 60, { forward: 1, strafe: Math.sin(frame), turn: Math.cos(frame), boost: true });
     assert.ok(Object.values(physics.pos).every(Number.isFinite));
-    assert.ok(physics.pos.x >= -50 && physics.pos.x <= 50);
-    assert.ok(physics.pos.z >= -50 && physics.pos.z <= 100);
+
   }
   physics.pos.x = 999;
   physics.step(1 / 60);
+  assert.ok(physics.pos.x > 900, 'leaving the city must not teleport the horse');
+  physics.pos.x = NaN;
+  physics.step(1/60);
   assert.deepEqual(physics.pos, physics.spawn);
   assert.equal(physics.anchor, null);
   assert.equal(physics.resetCount, 1);
@@ -1044,4 +1046,150 @@ test('Pony Express pads in the real city support pickup and delivery landings', 
   }
   assert.equal(delivery.phase, 'delivered');
   assert.equal(physics.lost, false);
+});
+
+
+test('expanded city doubles area northward with traversable blocks beyond the old boundary', () => {
+  const city = actualCityFixture();
+  const { minX, maxX, minZ, maxZ } = city.bounds;
+  assert.equal(maxX - minX, 990);
+  assert.equal((maxX - minX) * (maxZ - minZ), 2 * 990 * 1460);
+  assert.equal(CITY_LAYOUT.maxRow - CITY_LAYOUT.minRow + 1, 40);
+  assert.ok(city.buildings.filter(b => b.maxZ < -1100).length > 350);
+  assert.ok(city.anchors.filter(a => a.z < -1100).length > 1400);
+  const p = new SwingPhysics({ ...city, spawn: { x: 0, y: 350, z: -1090 }, initialVelocity: { x: 0, y: 0, z: -40 } });
+  const resets = p.resetCount;
+  stepFor(p, 1);
+  assert.ok(p.pos.z < -1120);
+  assert.equal(p.resetCount, resets);
+  for (const z of [-1500, -2000, -2450]) {
+    const delivery = createDelivery(city.buildings, { x: 0, z });
+    assert.ok(delivery.pickup.z < -1100);
+    for (const target of [delivery.start, delivery.pickup, delivery.dropoff]) {
+      p.pos = { ...target }; p.vel = { x: 0, y: 0, z: 0 };
+      stepFor(p, .5);
+      assert.equal(p.grounded, true);
+      assert.ok(Math.abs(p.pos.y - target.y) < .01, 'delivery roof must be exposed and support a landing');
+    }
+  }
+});
+
+test('point zip allows rooftop movement but guards every edge until an explicit launch', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    const p = pointZipFixture(), target = p.pointCandidate(0);
+    p.zipToPoint(target);
+    for (let i = 0; i < 2 / dt && !p.perch; i++) p.step(dt, { swingHeld: true });
+    assert.ok(p.perch, 'zip should arrive and lock');
+    assert.ok(p.time < 1.2, 'zip should complete promptly');
+    assert.ok(Math.hypot(p.pos.x-target.landing.x,p.pos.y-target.landing.y,p.pos.z-target.landing.z) < .01);
+    const landing = { ...p.pos };
+    p.yaw=0;
+    for (let i = 0; i < 1 / dt; i++) p.step(dt, { forward: 1, strafe: -1, boost: true, swingHeld: true });
+    assert.ok(Math.hypot(p.pos.x-landing.x,p.pos.z-landing.z) > 1, 'movement must work after arrival');
+    p.yaw=0;
+    for (const input of [{forward:1},{strafe:1},{forward:-1},{strafe:-1}]) {
+      for (let i=0;i<5/dt;i++) {
+        p.step(dt,input);
+        assert.ok(p.pos.x>=target.roof.minX && p.pos.x<=target.roof.maxX);
+        assert.ok(p.pos.z>=target.roof.minZ && p.pos.z<=target.roof.maxZ);
+        assert.equal(p.pos.y,landing.y);
+      }
+      assert.ok(Math.hypot(p.vel.x,p.vel.z)<.01, 'legs should stop at the edge');
+    }
+    assert.equal(p.grounded, true);
+    assert.equal(p.anchor, null);
+    assert.equal(p.attach(p.anchors[0]), false);
+    p.connect(p.anchors[0]);
+    assert.equal(p.anchor, null);
+    p.release();
+    assert.ok(p.perch, 'releasing input or pausing must not unlock the perch');
+    assert.equal(p.contextualAction(p.yaw).label, 'Launch');
+    const yaw = p.yaw;
+    assert.equal(p.contextualJump(yaw), true);
+    assert.equal(p.perch, null);
+    assert.equal(p.grounded, false);
+    assert.ok(Math.abs(p.vel.x + Math.sin(yaw)*32) < .001);
+    assert.ok(Math.abs(p.vel.z + Math.cos(yaw)*32) < .001);
+    assert.ok(p.vel.y > 0);
+    p.step(dt, { swingHeld: true });
+    assert.equal(p.anchor, null, 'launch gets clearance before a held swing can reattach');
+    p.reset();
+    assert.equal(p.snapshot().perched, false);
+  }
+});
+
+test('ordinary rooftop movement remains free and a blocked zip never locks a perch', () => {
+  const p = pointZipFixture();
+  p.pos = {x:0,y:32.202,z:-40}; p.vel = {x:0,y:0,z:0}; p.grounded = true;
+  stepFor(p, .3, { forward: 1 });
+  assert.ok(p.pos.z < -40.5);
+  assert.equal(p.perch, null);
+  const blocked = pointZipFixture(); blocked.zipToPoint(blocked.pointCandidate(0));
+  blocked.buildings.push({ minX:-30,maxX:30,minY:0,maxY:100,minZ:-12,maxZ:-10 });
+  stepFor(blocked, .5);
+  assert.equal(blocked.perch, null);
+});
+
+
+test('roof surfaces match the visible slab and rooftop equipment blocks movement', () => {
+  const p=new SwingPhysics({buildings:[{x:0,z:0,width:40,depth:40,height:30,roofHeight:30.6}],
+    rooftopObstacles:[{minX:-4,maxX:4,minZ:-4,maxZ:4,minY:30.6,height:34}],
+    spawn:{x:0,y:32.802,z:12},initialVelocity:{x:0,y:0,z:0}});
+  p.grounded=true;
+  p.perch={...p.pos,roof:{minX:-18,maxX:18,minZ:-18,maxZ:18}};
+  stepFor(p,3,{forward:1});
+  assert.ok(p.pos.z>=5.15, 'shed collision must stop the horse before its body enters');
+  assert.ok(Math.abs(p.pos.y-2.2-30.6)<.01, 'soles match the visible roof surface');
+  p.perch=null;p.pos={x:0,y:45,z:0};p.vel={x:0,y:-20,z:0};
+  stepFor(p,1);
+  assert.ok(Math.abs(p.pos.y-2.2-34)<.01, 'jumping onto equipment lands on its actual top');
+});
+
+test('generated rooftop props have collision geometry and delivery starts clear of them', () => {
+  const city=actualCityFixture();
+  assert.ok(city.rooftopObstacles.length>city.buildings.length);
+  const mission=createDelivery(city.buildings,city.spawn);
+  for(const pad of [mission.start,mission.pickup,mission.dropoff]) {
+    assert.ok(!city.rooftopObstacles.some(o=>pad.x>o.minX-1.15 && pad.x<o.maxX+1.15 && pad.z>o.minZ-1.15 && pad.z<o.maxZ+1.15 && pad.y>o.minY && pad.y<o.height+2.2));
+  }
+});
+
+
+test('island shoreline surrounds the playable city and water extends beyond all four coasts', () => {
+  const scene=new Scene(), city=actualCityFixture(scene), coast=city.island;
+  assert.ok(coast.minX<city.bounds.minX && coast.maxX>city.bounds.maxX);
+  assert.ok(coast.minZ<city.bounds.minZ && coast.maxZ>city.bounds.maxZ);
+  for(const b of city.buildings) {
+    assert.ok(b.minX>=coast.minX && b.maxX<=coast.maxX);
+    assert.ok(b.minZ>=coast.minZ && b.maxZ<=coast.maxZ);
+  }
+  const water=scene.getObjectByName('Surrounding island water');
+  assert.ok(water.position.y<0);
+  assert.ok(water.geometry.parameters.width/2>Math.max(Math.abs(coast.minX),Math.abs(coast.maxX)));
+  assert.ok(water.geometry.parameters.height>coast.maxZ-coast.minZ+2000);
+});
+
+
+test('all four coasts allow outward flight and water contact ends the run', () => {
+  const island={minX:-20,maxX:20,minZ:-20,maxZ:20};
+  for(const [axis,sign] of [['x',-1],['x',1],['z',-1],['z',1]]) {
+    const p=new SwingPhysics({island,waterLevel:-1.2,bounds:island,spawn:{x:0,y:45,z:0},initialVelocity:{x:0,y:0,z:0}});
+    p.pos[axis]=sign*19;p.vel[axis]=sign*60;
+    p.step(.1);
+    assert.ok(p.pos[axis]*sign>20);
+    assert.ok(p.vel[axis]*sign>0, 'no bounce at the coast');
+    assert.equal(p.lost,false);
+    p.pos[axis]=sign*200;
+    p.step(1/60);
+    assert.equal(p.resetCount,0, 'no out-of-bounds reset over water');
+    p.pos.y=2.1;p.vel.y=-1;
+    p.step(1/120);
+    assert.equal(p.lost,false, 'water lies below the street surface');
+    stepFor(p,1);
+    assert.equal(p.lost,true);
+    assert.ok(Math.abs(p.pos.y-1)<.001);
+    assert.deepEqual(p.vel,{x:0,y:0,z:0});
+    const end={...p.pos};p.step(1);assert.deepEqual(p.pos,end);
+    p.reset();assert.equal(p.lost,false);
+  }
 });
