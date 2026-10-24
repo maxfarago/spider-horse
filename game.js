@@ -6,6 +6,7 @@ import { updateWebTarget } from './web-target.js';
 import { cameraClearance, revealAnchor, turnTowardAnchor, flightCameraFrame } from './anchor-camera.js';
 import { bindHold, bindJoystick, bindLook, travelIntent, panView } from './controls.js';
 import { traversalFeel } from './traversal-feel.js';
+import { createDelivery, deliveryTarget, advanceDelivery } from './pony-express.js';
 import { SwingPhysics } from './physics.js';
 import { HDRLoader } from './vendor/HDRLoader.js';
 import { createCinematics } from './cinematics.js';
@@ -20,7 +21,7 @@ const webControlLabel = () => matchMedia('(max-width:760px), (pointer:coarse)').
 const preferences = { atmosphere: 'golden', quality: 'high', camera: 'chase', audio: false, reduceMotion: false };
 try { Object.assign(preferences, JSON.parse(localStorage.getItem('skystride.preferences') || '{}')); } catch { /* Private browsing still supports play. */ }
 let renderer, scene, camera, city, horse, physics, sun, ambient, fill, skyMaterial, cinematics;
-let started = false, paused = false, mode = 'roam', checkpoint = 0, elapsed = 0, running = false;
+let started = false, paused = false, mode = 'express', delivery, elapsed = 0, running = false;
 let now = 0, toastTimeout, renderFrames = 0, previousTime = performance.now(), accumulator = 0;
 let frameSelectedAnchor = false, facingAnchor = null, viewYaw = 0, previewAge = 0;
 const anchorViewState = {};
@@ -28,7 +29,7 @@ const previewStartOffset = new THREE.Vector3(), previewLookOffset = new THREE.Ve
 let orbit = 0, pitch = .1;
 let pointTarget = null;
 let displayedAnchor = null, joystickSteering = 0;
-let lastImpact = -1, lastReset = 0, checkpointPulse = 0, lastUI = 0, autoAttachTime = 0;
+let lastImpact = -1, lastReset = 0, lastUI = 0, autoAttachTime = 0;
 let previousTension = 0, ropeRipple = 0, lastAttachmentCount = 0;
 let audioContext, windGain, windFilter, cityGain;
 const particlePositions = new Float32Array(70 * 6);
@@ -36,7 +37,7 @@ const cameraTrackedHorse = new THREE.Vector3(), cameraTravel = new THREE.Vector3
 const cameraTarget = new THREE.Vector3(), desiredCamera = new THREE.Vector3(), desiredTarget = new THREE.Vector3();
 const horsePosition = new THREE.Vector3(), projected = new THREE.Vector3(), tetherStart = new THREE.Vector3();
 const ropePoints = new Float32Array(33 * 3);
-let rope, streaks, rings = [];
+let rope, streaks, deliveryMarker, pickupPackage, carriedPackage;
 
 function toast(message, duration = 3000) {
   $('toast').textContent = message;
@@ -48,11 +49,6 @@ function savePreferences() { try { localStorage.setItem('skystride.preferences',
 function anyDialog() { return document.querySelector('dialog[open]') !== null; }
 function clearInput() { displayedAnchor = null; keys.clear(); inputCleanups.forEach(clear => clear()); touchKeys.clear(); physics?.release(); if (physics) physics.pointZip = null; autoAttachTime = 0; }
 function openDialog(id) { clearInput(); $(id).showModal(); }
-function formatTime(seconds) {
-  const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
-  return `${minutes}:${(seconds % 60).toFixed(2).padStart(5, '0')}`;
-}
-
 function createSky() {
   skyMaterial = new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false,
@@ -105,22 +101,113 @@ function setQuality() {
   cinematics?.resize(shell.clientWidth * renderer.getPixelRatio(), shell.clientHeight * renderer.getPixelRatio(), preferences.quality === 'high');
   savePreferences();
 }
-function makeCourse() {
-  const ringGeometry = new THREE.TorusGeometry(8, .12, 8, 80);
-  const accentGeometry = new THREE.TorusGeometry(8.55, .035, 4, 80);
-  city.route.forEach((position, index) => {
-    const group = new THREE.Group(); group.position.copy(position);
-    const material = new THREE.MeshBasicMaterial({ color: '#c5f36a', transparent: true, opacity: .9 });
-    group.add(new THREE.Mesh(ringGeometry, material));
-    const accent = new THREE.Mesh(accentGeometry, new THREE.MeshBasicMaterial({ color: '#eeffc8', transparent: true, opacity: .3 })); group.add(accent);
-    for (let a = 0; a < 4; a++) {
-      const dash = new THREE.Mesh(new THREE.BoxGeometry(.14, 1.8, .14), material);
-      dash.position.set(Math.sin(a * Math.PI / 2) * 8.6, Math.cos(a * Math.PI / 2) * 8.6, 0);
-      dash.rotation.z = -a * Math.PI / 2; group.add(dash);
+function makeParcel() {
+  const parcel = new THREE.Group();
+  const box = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.2, 1.3), new THREE.MeshStandardMaterial({ color: '#c79560', roughness: .85 }));
+  box.castShadow = true; parcel.add(box);
+  const tape = new THREE.MeshPhysicalMaterial({ color: '#a9233c', roughness: .32, metalness: .08,
+    sheen: 1, sheenColor: new THREE.Color('#ed8090'), sheenRoughness: .45, side: THREE.DoubleSide });
+  parcel.add(new THREE.Mesh(new THREE.BoxGeometry(.23, 1.215, 1.315), tape));
+  parcel.add(new THREE.Mesh(new THREE.BoxGeometry(1.615, 1.215, .19), tape));
+  // Broad, gently crowned satin strips: folded loops rather than round tubing.
+  function ribbonStrip(points, width, across, tail = false) {
+    const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(...p)));
+    const vertices = [], indices = [], rows = 40, columns = 4;
+    for (let row = 0; row <= rows; row++) {
+      for (let col = 0; col <= columns; col++) {
+        const u = col / columns, t = row / rows;
+        // Pull the middle of the final edge inward to form a swallowtail cut.
+        const cut = tail ? .12 * (1 - Math.abs(u * 2 - 1)) * Math.pow(t, 10) : 0;
+        const progress = t - cut;
+        const point = curve.getPoint(progress);
+        let fold = 0;
+        if (tail) {
+          // Follow the box exterior with a rounded quarter-turn at its edge.
+          // A free spline cuts through this corner and makes the ribbon disappear.
+          fold = Math.max(0, Math.min(1, (progress - .5) / .2)) * Math.PI / 2;
+          point.x = Math.sign(points[0][0]) * (.06 + .32 * progress);
+          if (progress < .5) { point.y = .66; point.z = .03 + 1.16 * progress; }
+          else if (progress <= .7) { point.y = .58 + .08 * Math.cos(fold); point.z = .61 + .08 * Math.sin(fold); }
+          else { point.y = .58 - (progress - .7) * 1.2; point.z = .69; }
+        }
+        const spread = width * (tail ? .8 + .2 * t : .55 + .45 * Math.sin(Math.PI * t));
+        point.addScaledVector(across, (u - .5) * spread);
+        const crown = Math.sin(u * Math.PI) * .025;
+        point.y += crown * Math.cos(fold);
+        point.z += crown * Math.sin(fold);
+        vertices.push(point.x, point.y, point.z);
+        if (row < rows && col < columns) {
+          const i = row * (columns + 1) + col;
+          indices.push(i, i + columns + 1, i + 1, i + 1, i + columns + 1, i + columns + 2);
+        }
+      }
     }
-    if (index < city.route.length - 1) group.lookAt(city.route[index + 1]);
-    group.visible = false; scene.add(group); rings.push(group);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    geometry.setIndex(indices); geometry.computeVertexNormals();
+    const ribbon = new THREE.Mesh(geometry, tape); ribbon.castShadow = true; parcel.add(ribbon);
+  }
+  for (const side of [-1, 1]) {
+    ribbonStrip([[0, .69, 0], [side * .3, .91, -.05], [side * .57, .87, -.07],
+      [side * .59, .73, -.02], [side * .3, .66, .06], [0, .68, .02]], .27, new THREE.Vector3(0, 0, 1));
+    ribbonStrip([[side * .06, .67, .03], [side * .19, .66, .27],
+      [side * .29, .63, .58], [side * .34, .5, .68], [side * .38, .22, .7]], .22, new THREE.Vector3(1, 0, 0), true);
+  }
+  const knot = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), tape);
+  knot.position.set(0, .72, .015); knot.scale.set(.14, .085, .13); knot.castShadow = true; parcel.add(knot);
+  return parcel;
+}
+const beaconUniforms = { time: { value: 0 }, motion: { value: 1 } };
+
+function makeDelivery() {
+  delivery = createDelivery(city.buildings, city.spawn);
+  deliveryMarker = new THREE.Group();
+  const material = new THREE.MeshBasicMaterial({ color: '#f4f4f4', transparent: true, opacity: .8, depthWrite: false, side: THREE.DoubleSide });
+  const pad = new THREE.Mesh(new THREE.RingGeometry(.8, 1, 64), material);
+  pad.rotation.x = -Math.PI / 2; deliveryMarker.add(pad);
+  const beamMaterial = new THREE.ShaderMaterial({
+    uniforms: beaconUniforms,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.FrontSide,
+    vertexShader: `varying vec2 vUv; varying vec3 vNormal; varying vec3 vView;
+      void main(){vUv=uv;vec4 p=modelViewMatrix*vec4(position,1.);vNormal=normalize(normalMatrix*normal);vView=-p.xyz;gl_Position=projectionMatrix*p;}`,
+    fragmentShader: `uniform float time; uniform float motion; varying vec2 vUv; varying vec3 vNormal; varying vec3 vView;
+      void main(){
+        float edge=pow(max(dot(normalize(vNormal),normalize(vView)),0.),1.6);
+        float heightFade=pow(1.-vUv.y,1.8)*(1.-smoothstep(.65,1.,vUv.y));
+        float phase=fract(vUv.y*4.-time*.22*motion);
+        // Three slim bright rings per group, over an uninterrupted faint beam.
+        float distanceToBand=min(abs(phase-.14),min(abs(phase-.205),abs(phase-.27)));
+        float feather=max(fwidth(phase),.002);
+        float bands=1.-smoothstep(.007,.007+feather,distanceToBand);
+        float topFade=1.-smoothstep(.70,1.,vUv.y);
+        float opacity=mix(.12*heightFade,topFade,bands);
+        gl_FragColor=vec4(vec3(1.),edge*opacity);
+
+      }`,
   });
+  // A broad shaft of light, feathered at its sides and fading into the sky.
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(7, 3.8, 150, 64, 1, true), beamMaterial);
+  beam.position.y = 75; deliveryMarker.add(beam);
+  const glow = new THREE.Mesh(new THREE.PlaneGeometry(22, 22), new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+    fragmentShader: `varying vec2 vUv;void main(){float r=length(vUv-.5)*2.;float a=pow(max(0.,1.-r),3.);gl_FragColor=vec4(1.,1.,1.,a*.7);}`,
+  }));
+  glow.rotation.x = -Math.PI / 2; glow.position.y = .03; deliveryMarker.add(glow);
+  scene.add(deliveryMarker);
+  pickupPackage = makeParcel(); scene.add(pickupPackage);
+  carriedPackage = makeParcel(); carriedPackage.scale.setScalar(.45); carriedPackage.position.set(0, 1.9, .2); horse.group.add(carriedPackage);
+  updateDelivery();
+}
+function updateDelivery() {
+  const active = started && mode === 'express' && running;
+  const target = deliveryTarget(delivery);
+  deliveryMarker.visible = active;
+  deliveryMarker.position.set(target.x, target.y - 1.5, target.z);
+  deliveryMarker.children[0].scale.setScalar(target.radius);
+  pickupPackage.position.set(delivery.pickup.x, delivery.pickup.y + .5, delivery.pickup.z);
+  pickupPackage.visible = active && delivery.phase === 'pickup';
+  carriedPackage.visible = active && delivery.phase === 'carrying';
 }
 function makeEffects() {
   rope = createWeb(); scene.add(rope.group);
@@ -153,7 +240,7 @@ async function boot() {
     scene.environment = pmrem.fromEquirectangular(environmentHDR).texture; pmrem.dispose();
     scene.environmentRotation.y = -.75;
     skyMaterial.uniforms.hdrSky.value = cloudHDR; skyMaterial.uniforms.hasHDR.value = 1;
-    makeEffects(); makeCourse(); setQuality(); atmosphere();
+    makeEffects(); makeDelivery(); setQuality(); atmosphere();
     for (const [id, value] of [['atmosphere-select', preferences.atmosphere], ['quality-select', preferences.quality], ['camera-select', preferences.camera]]) $(id).value = value;
     $('audio-toggle').checked = preferences.audio; $('motion-toggle').checked = preferences.reduceMotion;
     document.body.classList.toggle('touch-mode', matchMedia('(pointer:coarse)').matches);
@@ -164,7 +251,7 @@ async function boot() {
     $('loading').style.opacity = '0';
     setTimeout(() => $('loading').classList.add('hidden'), 650);
     $('intro').classList.remove('hidden');
-    window.skystride = { getState: () => ({ started, paused, mode, checkpoint, elapsed, running, physics: physics.snapshot(), drawCalls: cinematics.stats.calls, triangles: cinematics.stats.triangles }), start: launch, reset: resetRun };
+    window.skystride = { getState: () => ({ started, paused, mode, delivery: structuredClone(delivery), elapsed, running, physics: physics.snapshot(), drawCalls: cinematics.stats.calls, triangles: cinematics.stats.triangles }), start: launch, reset: resetRun };
   } catch (error) {
     console.error(error); $('loading').classList.add('hidden'); $('error-screen').classList.remove('hidden');
     $('error-message').textContent = `The scene could not initialize: ${error.message}`;
@@ -178,42 +265,47 @@ function resize() {
 function launch(nextMode = mode) {
   frameSelectedAnchor = false; facingAnchor = null; viewYaw = 0; orbit = 0; pitch = .1; pointTarget = null;
   clearInput();
-  if ($('loss-dialog').open) $('loss-dialog').close();
+  for (const id of ['loss-dialog', 'finish-dialog']) if ($(id).open) $(id).close();
   started = true; paused = false; mode = nextMode;
   document.body.classList.add('playing'); $('intro').classList.add('hidden'); $('live-indicator').classList.remove('hidden'); $('reticle').classList.remove('hidden'); $('pause-chip').classList.add('hidden');
   horse.group.rotation.set(0, 0, 0, 'XYZ');
-  physics.reset(); lastImpact = -1; lastReset = physics.resetCount; elapsed = 0; checkpoint = 0; running = mode === 'trial'; accumulator = 0;
+  physics.reset(); lastImpact = -1; lastReset = physics.resetCount; elapsed = 0; delivery.phase = 'pickup'; running = mode === 'express';
+  if (running) {
+    physics.pos = { x: delivery.start.x, y: delivery.start.y, z: delivery.start.z };
+    physics.vel = { x: 0, y: 0, z: 0 };
+    physics.grounded = true;
+    physics.yaw = Math.atan2(physics.pos.x - delivery.pickup.x, physics.pos.z - delivery.pickup.z);
+    viewYaw = physics.yaw;
+  }
+  cameraTrackedHorse.set(physics.pos.x, physics.pos.y, physics.pos.z);
+  camera.position.set(physics.pos.x + Math.sin(viewYaw) * 12, physics.pos.y + 5, physics.pos.z + Math.cos(viewYaw) * 12);
+  cameraTarget.set(physics.pos.x, physics.pos.y, physics.pos.z); accumulator = 0;
   document.querySelectorAll('[data-mode]').forEach(button => button.classList.toggle('active', button.dataset.mode === mode));
-  $('trial-hud').classList.toggle('hidden', mode !== 'trial'); $('route-card').classList.toggle('hidden', mode === 'trial');
-  $('checkpoint-label').classList.toggle('hidden', mode !== 'trial'); updateCourse();
-  if (mode === 'trial') toast('Midtown Run · Fly through all 8 gates. Your clock is running.', 4000);
-  else toast(`You’re falling! Hold ${webControlLabel()} to catch a rooftop.`, 5000);
+  $('route-card').classList.toggle('hidden', mode === 'express');
+  updateDelivery();
+  clearTimeout(toastTimeout); $('toast').classList.remove('visible');
+  if (mode === 'roam') toast(`You’re falling! Hold ${webControlLabel()} to catch a rooftop.`, 5000);
   if (preferences.audio) enableAudio(); canvas.focus();
 }
 function loseRun() {
-  running = false; paused = false; clearInput(); updateCourse();
+  running = false; paused = false; clearInput(); updateDelivery();
   $('pause-chip').classList.add('hidden');
   $('loss-time').textContent = physics.time.toFixed(1);
   $('loss-distance').textContent = Math.round(physics.distanceTravelled).toLocaleString();
   $('loss-dialog').showModal(); tone(70, .2);
 }
-function resetRun() { if (!started) return; launch(mode); toast(mode === 'trial' ? 'Fresh start. Make this one count.' : 'Back above Midtown. Take the leap.'); }
-function updateCourse() { rings.forEach((ring, index) => { ring.visible = mode === 'trial' && running && index >= checkpoint && index < checkpoint + 3; ring.scale.setScalar(index === checkpoint ? 1 : .95); ring.children.forEach(child => { child.material.opacity = index === checkpoint ? .9 : .18; }); }); }
+function resetRun() { if (!started) return; launch(mode); toast(mode === 'express' ? 'Fresh start. Make this one count.' : 'Back above Midtown. Take the leap.'); }
 function finishRun() {
-  running = false; clearInput(); updateCourse();
-  $('finish-time').textContent = formatTime(elapsed);
-  let previous = Infinity;
-  try { previous = Number(localStorage.getItem('skystride.best.survival-v1') || Infinity); if (elapsed < previous) localStorage.setItem('skystride.best.survival-v1', String(elapsed)); } catch { /* Optional persistence. */ }
-  $('finish-best').textContent = elapsed < previous ? 'A new personal best. The city is yours.' : `Personal best ${formatTime(previous)}. There’s always a faster line.`;
+  running = false; clearInput(); updateDelivery();
   $('finish-dialog').showModal(); tone(660, .2); setTimeout(() => tone(990, .35), 160);
 }
 function setPaused(value) { paused = value; clearInput(); $('pause-chip').classList.toggle('hidden', !paused); if (!paused) canvas.focus(); }
 function quitToTitle() {
   clearInput(); started = false; paused = false; running = false;
-  physics.reset(); updateCourse();
+  physics.reset(); updateDelivery();
   document.body.classList.remove('playing');
   $('intro').classList.remove('hidden');
-  for (const id of ['pause-chip', 'live-indicator', 'reticle', 'web-target', 'anchor-marker', 'trial-hud', 'checkpoint-label']) $(id).classList.add('hidden');
+  for (const id of ['pause-chip', 'live-indicator', 'reticle', 'web-target', 'anchor-marker']) $(id).classList.add('hidden');
   clearTimeout(toastTimeout); $('toast').classList.remove('visible');
   document.querySelector('#intro [data-mode]').focus();
 }
@@ -241,15 +333,18 @@ function beginSwing() {
 function setupEvents() {
   addEventListener('resize', resize);
   document.querySelectorAll('[data-mode]').forEach(button => { button.onclick = () => launch(button.dataset.mode); });
-  $('route-action').onclick = () => launch('trial'); $('restart-trial').onclick = resetRun;
+  $('route-action').onclick = () => launch('express');
   for (const id of ['controls-button']) $(id).onclick = () => openDialog('controls-dialog');
   $('settings-button').onclick = () => openDialog('settings-dialog');
   document.querySelectorAll('[data-close]').forEach(button => { button.onclick = () => button.closest('dialog').close(); });
   $('school-launch').onclick = () => { $('controls-dialog').close(); if (!started) launch(); else canvas.focus(); };
   $('settings-done').onclick = () => { $('settings-dialog').close(); canvas.focus(); };
   $('loss-dialog').addEventListener('cancel', event => event.preventDefault());
-  $('play-again').onclick = () => { $('finish-dialog').close(); launch('trial'); };
-  $('back-roam').onclick = () => { $('finish-dialog').close(); launch('roam'); };
+  $('play-again').onclick = () => {
+    $('finish-dialog').close();
+    delivery = createDelivery(city.buildings, delivery.dropoff);
+    launch('express');
+  };
   $('atmosphere-select').onchange = (event) => { preferences.atmosphere = event.target.value; atmosphere(); };
   $('quality-select').onchange = (event) => { preferences.quality = event.target.value; setQuality(); };
   $('camera-select').onchange = (event) => { preferences.camera = event.target.value; savePreferences(); };
@@ -261,7 +356,7 @@ function setupEvents() {
     if ($('loss-dialog').open) {
       if (['Space', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
         event.preventDefault();
-        if (!event.repeat) launch(event.code === 'Space' ? mode : mode === 'trial' ? 'roam' : 'trial');
+        if (!event.repeat) launch(event.code === 'Space' ? mode : mode === 'express' ? 'roam' : 'express');
       }
       return;
     }
@@ -337,8 +432,7 @@ function updatePhysics(dt) {
   viewYaw += difference * (1-Math.exp(-dt*4));
   // Steering brings the optional look offset back behind the horse.
   if (Math.abs(steer) > .05) orbit *= Math.exp(-dt * 4);
-  const previous = { ...physics.pos };
-  physics.step(dt, { turn, forward, strafe, reel, swingHeld: held('Space'), swingTarget: undefined, boost: false });
+    physics.step(dt, { turn, forward, strafe, reel, swingHeld: held('Space'), swingTarget: undefined, boost: false });
   if (physics.lost) { loseRun(); return { turn: 0, forward: 0 }; }
   if ((physics.attachmentCount || 0) !== lastAttachmentCount) { lastAttachmentCount = physics.attachmentCount || 0; ropeRipple = 1; tone(190, .065); }
   if (autoAttachTime > 0 && held('Space')) { autoAttachTime -= dt; if (attachLedge(undefined)) autoAttachTime = 0; }
@@ -346,18 +440,11 @@ function updatePhysics(dt) {
   if (physics.lastImpact && physics.lastImpact.time !== lastImpact) { lastImpact = physics.lastImpact.time; if (physics.lastImpact.speed > 16) tone(65, .08); }
   if (running) {
     elapsed += dt;
-    const target = city.route[checkpoint];
-    if (target) {
-      // Sweep the entire movement segment so fast flight cannot skip a gate.
-      const start = new THREE.Vector3(previous.x, previous.y, previous.z);
-      const end = new THREE.Vector3(physics.pos.x, physics.pos.y, physics.pos.z);
-      const direction = end.clone().sub(start), denominator = direction.lengthSq();
-      const t = denominator ? THREE.MathUtils.clamp(target.clone().sub(start).dot(direction) / denominator, 0, 1) : 0;
-      if (start.addScaledVector(direction, t).distanceTo(target) < 9.8) {
-        checkpoint += 1; checkpointPulse = 1; physics.energy = Math.min(1, physics.energy + .25); tone(500 + checkpoint * 60, .13);
-        if (checkpoint >= city.route.length) finishRun(); else { toast(`Checkpoint ${checkpoint} / ${city.route.length} · Boost replenished`, 1200); updateCourse(); }
-      }
-    }
+    const event = advanceDelivery(delivery, physics);
+    if (event === 'carrying') {
+      updateDelivery(); tone(580, .15);
+      toast('Package collected! Follow the new searchlight to deliver it.', 5000);
+    } else if (event === 'delivered') finishRun();
   }
   return { turn, forward };
 }
@@ -511,14 +598,6 @@ function snapBurst() {
 }
 function updateUI() {
   physics.viewYaw = travelIntent(physics.vel, physics.yaw, currentSteer());
-  const debug = physics.swingTelemetry();
-  $('swing-debug').hidden = !started || !(location.hostname === 'localhost' || location.hostname === '127.0.0.1' || new URLSearchParams(location.search).get('debug') === '1');
-  $('debug-speed').textContent = `${Math.round(debug.speed * 3.6)} km/h`;
-  $('debug-phase').textContent = `${(physics.pointZip ? 'point-zip' : traversalFeel(physics).phase).toUpperCase()} · ${debug.phase}`;
-  $('debug-angle').hidden = debug.angle === null;
-  $('debug-angle').style.left = `${(debug.angle || 0) / 180 * 100}%`;
-  $('debug-detail').textContent = `${debug.angle === null ? 'No tether' : `${Math.round(debug.angle)}° from bottom`} · vertical ${debug.verticalSpeed.toFixed(1)} m/s`;
-  $('debug-snap').textContent = debug.lastSnap ? `JUMP ${Math.round(debug.lastSnap.before * 3.6)} → ${Math.round(debug.lastSnap.after * 3.6)} km/h · ${Math.max(0, physics.time - debug.lastSnap.time).toFixed(1)}s ago` : 'Jump: early for speed · later for height';
   const speed = started ? Math.hypot(physics.vel.x, physics.vel.y, physics.vel.z) * 3.6 : 0;
   $('speed').textContent = Math.round(speed).toString();
   $('speed-bar').style.width = `${Math.min(speed / 250 * 100, 100)}%`;
@@ -531,7 +610,6 @@ function updateUI() {
   const lowAltitude = started && !physics.lost && !physics.grounded && horsePosition.y < 20;
   shell.dataset.lowAltitude = String(lowAltitude);
   $('altitude-note').textContent = physics.lost ? 'On the ground' : lowAltitude ? 'Mind the pavement' : 'Above the street';
-  $('timer').textContent = formatTime(elapsed); $('checkpoint-count').textContent = `${String(checkpoint).padStart(2, '0')} / 08`; $('progress-bar').style.width = `${checkpoint / 8 * 100}%`;
   const swingAnchor = active || physics.findAnchor();
   displayedAnchor = swingAnchor;
   const action = physics.contextualAction(travelIntent(physics.vel, physics.yaw, 0));
@@ -550,7 +628,6 @@ function updateUI() {
     $('anchor-marker').classList.toggle('hidden', !visible);
     if (visible) { $('anchor-marker').style.left = `${(projected.x * .5 + .5) * 100}%`; $('anchor-marker').style.top = `${(-projected.y * .5 + .5) * 100}%`; $('anchor-label').textContent = 'Zip to point'; if (occluded) $('anchor-label').textContent += ' · Behind building'; }
   } else $('anchor-marker').classList.add('hidden');
-  if (running && city.route[checkpoint]) { $('checkpoint-distance').textContent = `${Math.round(horsePosition.distanceTo(city.route[checkpoint]))} m`; }
   const district = physics.pos.z < -650 ? 'Herald Square' : physics.pos.z < -250 ? 'Midtown South' : 'Midtown West';
   $('district').textContent = district; $('map-coordinates').textContent = district;
   drawMinimap();
@@ -565,10 +642,11 @@ function drawMinimap() {
     ctx.fillStyle = b.height > 80 ? '#a6b4a1' : '#c9cfba'; ctx.fillRect(x, z, (b.maxX - b.minX) * scale, (b.maxZ - b.minZ) * scale);
   }
   if (running) {
-    ctx.strokeStyle = '#a3665070'; ctx.lineWidth = 1; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(width / 2, height / 2);
-    city.route.slice(checkpoint).forEach(point => ctx.lineTo(width / 2 + (point.x - pos.x) * scale, height / 2 + (point.z - pos.z) * scale)); ctx.stroke(); ctx.setLineDash([]);
-    const next = city.route[checkpoint];
-    if (next) { ctx.strokeStyle = '#a36650'; ctx.beginPath(); ctx.arc(width / 2 + (next.x - pos.x) * scale, height / 2 + (next.z - pos.z) * scale, 5, 0, Math.PI * 2); ctx.stroke(); }
+    const next = deliveryTarget(delivery);
+    ctx.strokeStyle = '#a36650'; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(width / 2, height / 2);
+    const x = width / 2 + (next.x - pos.x) * scale, z = height / 2 + (next.z - pos.z) * scale;
+    ctx.lineTo(x, z); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(x, z, 5, 0, Math.PI * 2); ctx.stroke();
   }
   ctx.strokeStyle = '#657b6840'; ctx.beginPath(); ctx.arc(width / 2, height / 2, 20, 0, Math.PI * 2); ctx.stroke();
   ctx.save(); ctx.translate(width / 2, height / 2); ctx.rotate(-physics.yaw); ctx.fillStyle = '#a36650'; ctx.shadowColor = '#a36650'; ctx.shadowBlur = 8; ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(4, 5); ctx.lineTo(0, 3); ctx.lineTo(-4, 5); ctx.closePath(); ctx.fill(); ctx.restore();
@@ -616,14 +694,16 @@ function frame(time) {
   let input = { turn: 0, forward: 0 };
   if (playing) {
     accumulator += dt;
-    while (accumulator >= 1 / 120 && !physics.lost) { input = updatePhysics(1 / 120); accumulator -= 1 / 120; }
+    while (accumulator >= 1 / 120 && !physics.lost && !anyDialog()) { input = updatePhysics(1 / 120); accumulator -= 1 / 120; }
   } else accumulator = 0;
   const visualDt = (playing && !physics.lost) || !started ? dt : 0;
   updateHorse(visualDt, input); updateCamera(visualDt); updateRope(); updateParticles();
   if (playing || !started) city.update(dt, now);
   ropeRipple = Math.max(0, ropeRipple - dt * 2);
-  skyMaterial.uniforms.time.value = now; checkpointPulse = Math.max(0, checkpointPulse - dt * 1.5);
-  if (running && rings[checkpoint]) rings[checkpoint].rotation.z = Math.sin(now * .7) * .04;
+  skyMaterial.uniforms.time.value = now;
+  beaconUniforms.time.value = now;
+  beaconUniforms.motion.value = preferences.reduceMotion ? 0 : 1;
+
   if (time - lastUI > 75) { updateUI(); updateAudio(); lastUI = time; }
   cinematics.setSpeedBurst(preferences.reduceMotion ? 0 : snapBurst());
   cinematics.render(scene); renderFrames++;

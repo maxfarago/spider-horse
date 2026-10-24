@@ -624,15 +624,9 @@ export function createCity(scene) {
     mesh.receiveShadow = true; mesh.computeBoundingSphere();
     mesh.name = 'City architectural instances'; group.add(mesh);
   }
-  const route = [
-    new THREE.Vector3(0, 40, -75), new THREE.Vector3(0, 55, -210),
-    new THREE.Vector3(-5, 48, -355), new THREE.Vector3(-72, 65, -465),
-    new THREE.Vector3(-72, 42, -610), new THREE.Vector3(0, 58, -720),
-    new THREE.Vector3(0, 72, -880), new THREE.Vector3(72, 62, -1010),
-  ];
   const safeAnchors = anchors.filter(a => !buildings.some(b => a.x > b.minX && a.x < b.maxX && a.z > b.minZ && a.z < b.maxZ && a.y < b.height + .6));
   return {
-    buildings, anchors: safeAnchors, route,
+    buildings, anchors: safeAnchors,
     spawn: new THREE.Vector3(0, 69, 50),
     bounds: { minX: -477, maxX: 513, minZ: -1100, maxZ: 360 },
     update(_dt, time) { water.material.color.setHSL(.53, .13, .43 + Math.sin(time * .16) * .008); },
