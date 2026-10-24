@@ -15,6 +15,15 @@ npm run build
 
 The local server listens on http://127.0.0.1:4177/. `SKYSTRIDE_PORT=4178 npm start` chooses another port. `start.command` launches the server on macOS with mise installed. The build command produces `dist/`, containing only the static runtime and its assets/licenses. Publish `dist/` with a static hosting service; `server.mjs` is a local preview server, not a deployed backend.
 
+## Modes
+
+**Pony Express** replaces Time Trial. Start stationary on a separate rooftop without a package. Follow the searchlight and land beside
+the parcel to collect it, then follow the new searchlight to the destination. Land inside
+the rooftop circle to deliver it. The package rides on the horse; a soft vertical searchlight marks the destination.
+There is no countdown. Restart retries the delivery; touching the street ends the run.
+
+**Free roam** keeps the free-fall start and open-ended traversal.
+
 ## Controls
 
 Hold **Space / Swing** to chain forward swings automatically; release to let go.
@@ -35,6 +44,7 @@ claim identical proprietary physics. Reference: [PlayStation's 2018 hands-on](ht
 ## Project map
 
 - `game.js`: scene, input, camera, UI and game loop.
+- `pony-express.js`: rooftop selection and pickup/delivery rules.
 - `physics.js`: collision, rope constraint, rooftop movement and momentum-aware ledge ranking.
 - `city.js`: procedural buildings, scenery and anchor generation.
 - `horse.js`, `web.js`, `anchor-camera.js`: horse animation, web rendering and cinematic framing.
@@ -73,13 +83,7 @@ Keep the GitHub repository private and preserve all third-party license notices.
 
 Keep `vendor/LICENSE.three`, `assets/LICENSE.warhorse.txt` and `assets/attribution.json`. The horse is Warhorse Lite by Literock Studios; HDR environments are from Poly Haven. Application source has no newly assigned open-source license. Google Fonts are loaded by the stylesheets. Google Maps is not integrated.
 
-### Swing tuning HUD
-
-Localhost play shows **Swing Lab** with speed, vertical velocity, and tether angle
-(0° directly below the anchor, 90° level with it, 180° directly above).
-On a phone/LAN address, append `?debug=1` to enable it. The panel shows the
-current phase without prescribing a jump instant. After a swing-jump it keeps
-the measured before/after speed and event age.
+### Swing tuning
 
 Swing-jumps blend a forward push into upward lift across the ascent: earlier
 for speed, later for height. After at least 0.3 seconds attached, rising ordinary release adds 15% speed

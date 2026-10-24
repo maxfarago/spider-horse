@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createDelivery, advanceDelivery } from './pony-express.js';
 import { SwingPhysics } from './physics.js';
 import { createCity } from './city.js';
 import { Scene, Raycaster, Vector3 } from './vendor/three.module.js';
@@ -1010,4 +1011,37 @@ test('soar gravity and drag weight fades continuously at timeout and through des
   p.time=.5;p.vel.y=-4;assert.equal(p.soarWeight(),.5);
   p.vel.y=-8;assert.equal(p.soarWeight(),0);
   p.vel.y=10;p.connect({x:0,y:100,z:-30});assert.equal(p.soarWeight(),0);
+});
+
+
+test('Pony Express pads in the real city support pickup and delivery landings', () => {
+  const city = actualCityFixture();
+  const delivery = createDelivery(city.buildings, city.spawn);
+  const physics = new SwingPhysics({ ...city, spawn: { ...city.spawn, y: city.spawn.y + 55 }, initialVelocity: { x: 0, y: -18, z: -8 }, fatalGround: true });
+  physics.step(1 / 120);
+  assert.equal(advanceDelivery(delivery, physics), null);
+  assert.equal(delivery.phase, 'pickup');
+  physics.pos = { ...delivery.start };
+  physics.vel = { x: 0, y: 0, z: 0 };
+  physics.grounded = true;
+  for (let i = 0; i < 600; i++) {
+    physics.step(1 / 120);
+    assert.equal(advanceDelivery(delivery, physics), null);
+  }
+  assert.equal(physics.grounded, true);
+  assert.ok(Math.abs(physics.pos.y - delivery.start.y) < .01);
+  assert.ok(Math.hypot(physics.pos.x - delivery.start.x, physics.pos.z - delivery.start.z) < .01);
+  assert.equal(delivery.phase, 'pickup');
+  physics.pos = { ...delivery.pickup };
+  physics.vel = { x: 0, y: 0, z: 0 };
+  physics.step(1 / 120);
+  assert.equal(advanceDelivery(delivery, physics), 'carrying');
+  physics.pos = { ...delivery.dropoff, y: delivery.dropoff.y + 15 };
+  physics.vel = { x: 0, y: -5, z: 0 };
+  for (let i = 0; i < 240 && delivery.phase !== 'delivered'; i++) {
+    physics.step(1 / 120);
+    advanceDelivery(delivery, physics);
+  }
+  assert.equal(delivery.phase, 'delivered');
+  assert.equal(physics.lost, false);
 });

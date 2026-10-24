@@ -127,18 +127,14 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
   .playing #shoot-web{display:flex;right:max(18px,env(safe-area-inset-right));bottom:max(24px,env(safe-area-inset-bottom));width:96px;height:96px}
 }
 
-/* Local development telemetry; enable remotely with ?debug=1. */
-#swing-debug{position:absolute;z-index:22;left:16px;top:100px;width:min(290px,calc(100vw - 32px));padding:12px 14px;border:1px solid #ffffff50;border-radius:12px;background:#10232de8;color:#f6f7f1;font:12px/1.5 monospace;pointer-events:none}
-#swing-debug[hidden]{display:none}
-.debug-heading,.debug-scale{display:flex;justify-content:space-between;gap:8px}.debug-heading>span{letter-spacing:2px;color:#b5c5ce}.debug-heading strong{font-size:18px}
-#debug-phase{font-weight:bold;margin:5px 0}.debug-track{position:relative;height:8px;background:linear-gradient(90deg,#7da1b8,#e7cd8e);border-radius:4px;margin:8px 0}
-#debug-angle{position:absolute;top:-3px;width:4px;height:14px;background:white;border-radius:2px;transform:translateX(-50%)}
-.debug-scale{font-size:9px;color:#b5c5ce}#debug-detail{margin-top:8px}#debug-snap{margin-top:5px;color:#e7cd8e}
-@media(max-width:760px){#swing-debug{top:76px;width:250px;padding:8px 12px}}
-
 /* Separate traversal actions: hold Swing, tap Jump, or zip to the point marker. */
 #world{touch-action:none}
 #jump-action{display:none}
 @media(max-width:760px),(pointer:coarse){
  .playing #jump-action{display:block;position:absolute;z-index:20;right:calc(max(18px,env(safe-area-inset-right)) + 108px);bottom:max(32px,env(safe-area-inset-bottom));width:72px;height:72px;border-radius:32px;border:1px solid #fff9;background:#faf4e8e8;color:#344738;font-weight:600;touch-action:manipulation}
 }
+
+/* Pony Express: a compact objective and a persistent rooftop destination. */
+
+
+#finish-dialog.menu-card h2{font:400 34px/1.12 'Bangers',Impact,sans-serif;letter-spacing:1px;margin:0 0 24px;text-align:center}
