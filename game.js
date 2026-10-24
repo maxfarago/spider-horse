@@ -28,7 +28,7 @@ const anchorViewState = {};
 const previewStartOffset = new THREE.Vector3(), previewLookOffset = new THREE.Vector3();
 let orbit = 0, pitch = .1;
 let pointTarget = null;
-let displayedAnchor = null, joystickSteering = 0;
+let displayedAnchor = null, joystickSteering = 0, joystickForward = 0;
 let lastImpact = -1, lastReset = 0, lastUI = 0, autoAttachTime = 0;
 let previousTension = 0, ropeRipple = 0, lastAttachmentCount = 0;
 let audioContext, windGain, windFilter, cityGain;
@@ -392,9 +392,10 @@ function setupEvents() {
   document.addEventListener('visibilitychange', () => { if (document.hidden) { clearInput(); if (started) setPaused(true); } previousTime = performance.now(); });
   inputCleanups.push(bindJoystick($('steering-joystick'), {
     enabled: () => started && !physics.lost && !paused && !anyDialog(),
-    change: value => {
-      joystickSteering = value;
-      $('joystick-thumb').style.transform = `translateX(${value * 30}px)`;
+    change: (x, y) => {
+      joystickSteering = x;
+      joystickForward = -y;
+      $('joystick-thumb').style.transform = `translate(${x * 30}px, ${y * 30}px)`;
     },
   }));
   inputCleanups.push(bindLook(canvas, {
@@ -428,7 +429,7 @@ function updatePhysics(dt) {
   const turn = physics.grounded ? 0 : steer, reel = 0;
   if (physics.grounded) physics.yaw = panView(physics.yaw, () => false, dt, -steer);
   physics.viewYaw = travelIntent(physics.vel, physics.yaw, steer);
-  const forward = physics.grounded ? Number(held('ArrowUp') || held('KeyW')) - Number(held('ArrowDown') || held('KeyS')) : 0;
+  const forward = physics.grounded ? THREE.MathUtils.clamp(Number(held('ArrowUp') || held('KeyW')) - Number(held('ArrowDown') || held('KeyS')) + joystickForward, -1, 1) : 0;
   const strafe = 0;
   const heading = physics.grounded ? physics.yaw : travelIntent(physics.vel, physics.yaw, 0);
   const difference = Math.atan2(Math.sin(heading-viewYaw),Math.cos(heading-viewYaw));
@@ -468,7 +469,7 @@ function updateHorse(dt, input) {
   }
   horse.group.position.set(position.x, position.y - 2.2, position.z);
   horsePosition.set(position.x, position.y, position.z);
-  horse.update(dt, { feel, reduceMotion: preferences.reduceMotion, hanging: !started, time: now, speed, grounded, perched: started && !!physics.perch, swinging, turn: input.turn, verticalSpeed, tension: started ? physics.tension || 0 : .5, stretch: started ? physics.stretch || 0 : 0 });
+  horse.update(dt, { webTarget: started ? (physics.anchor || physics.pointZip?.anchor) : null, feel, reduceMotion: preferences.reduceMotion, hanging: !started, time: now, speed, grounded, perched: started && !!physics.perch, swinging, turn: input.turn, verticalSpeed, tension: started ? physics.tension || 0 : .5, stretch: started ? physics.stretch || 0 : 0 });
   if (!started) {
     horse.group.updateMatrixWorld(true);
     horse.hangingAttachment.getWorldPosition(tetherStart);
@@ -740,7 +741,7 @@ function frame(time) {
   } else accumulator = 0;
   const visualDt = (playing && !physics.lost) || !started ? dt : 0;
   updateHorse(visualDt, input); updateCamera(visualDt); updateRope(); updateParticles();
-  if (playing || !started) city.update(dt, now);
+  if (playing || !started) city.update(dt, now, preferences.reduceMotion);
   ropeRipple = Math.max(0, ropeRipple - dt * 2);
   skyMaterial.uniforms.time.value = now;
   beaconUniforms.time.value = now;

@@ -38,7 +38,7 @@ There is no countdown. Restart retries the delivery; touching the street ends th
 ## Controls
 
 Hold **Space / Swing** to chain forward swings automatically; release to let go.
-**Left/right or A/D / joystick** steer travel. **Up/down or W/S** move on rooftops.
+**Left/right or A/D / joystick** steer travel. **Up/down, W/S, or joystick up/down** move on rooftops.
 **Shift / contextual action** jumps from a roof or attached swing. In flight, it
 zips to a marked perch within 12° of travel direction and a clear approach;
 without a perch it performs a short air zip. Near perch arrival it becomes
@@ -47,6 +47,9 @@ After a ledge zip, the horse can run around the rooftop, with movement stopped
 safely at its edges. **Shift / Launch** jumps off in the chosen direction. Swing
 does not pull it off the ledge. The legs stop immediately on arrival. The zip accelerates into a short settling approach,
 with a brief camera accent on arrival (disabled by Reduce motion).
+Swing and zip webs attach to the right front hoof. The supporting leg reaches
+toward the anchor while the other legs settle into a hanging pose; release
+blends back into flight, and landing restores the ground gait.
 **C** dives in free flight. The camera follows travel direction; steering
 recenters any optional look offset. **Right-drag / drag the open scene on touch**
 looks around; **Q or double-tap** recenters. Esc pauses. Looking does not choose

@@ -57,11 +57,9 @@ export async function createHorse() {
   if (!saddle) throw new Error('Horse saddle socket is missing');
   const attachment = new THREE.Object3D();
   attachment.name = 'tether';
-  // A point just above the saddle seat, expressed in the actual animated socket.
-  const saddlePosition = saddle.getWorldPosition(new THREE.Vector3());
-  saddle.worldToLocal(saddlePosition.add(new THREE.Vector3(0, 0.14, 0)));
-  attachment.position.copy(saddlePosition);
-  saddle.add(attachment);
+  const webHoof = model.getObjectByName('finger_R');
+  webHoof.add(attachment);
+  attachment.position.set(0, 0, 0);
   group.userData.attachment = attachment;
   group.userData.model = 'Warhorse Lite by Literock Studios';
   // The suspension rotates around the saddle, so a catch lifts the chest while
@@ -140,6 +138,67 @@ export async function createHorse() {
   let speed = 0, flight = 0, tension = 0, extension = 0, descent = 0, ascent = 0, turn = 0, clock = 0;
   let walkRate = 0.8, canterRate = 0.8;
   let bodyPitch = 0, pitchVelocity = 0, lift = 0, liftVelocity = 0, previousLoad = 0;
+
+  const supportingArm = model.getObjectByName('upperarm_R');
+  const supportingElbow = model.getObjectByName('forearm_R');
+  const limbNames = ['upperarm','forearm','hand','finger','thigh','calf','foot','toe'];
+  const limbRest = limbNames.flatMap(name => ['L','R'].map(side => {
+    const bone = model.getObjectByName(`${name}_${side}`);
+    return {bone, rotation:bone.quaternion.clone()};
+  }));
+  let webPose = 0;
+  const lastWebTarget = new THREE.Vector3();
+  const shoulderPoint = new THREE.Vector3(), elbowPoint = new THREE.Vector3(), hoofPoint = new THREE.Vector3();
+  const reachDirection = new THREE.Vector3(), bendDirection = new THREE.Vector3();
+  const elbowGoal = new THREE.Vector3(), hoofGoal = new THREE.Vector3();
+  const fromDirection = new THREE.Vector3(), toDirection = new THREE.Vector3();
+  const worldRotation = new THREE.Quaternion(), parentRotation = new THREE.Quaternion(), aimRotation = new THREE.Quaternion();
+  function aimJoint(bone, end, goal) {
+    const origin = bone.getWorldPosition(new THREE.Vector3());
+    fromDirection.copy(end.getWorldPosition(new THREE.Vector3())).sub(origin).normalize();
+    toDirection.copy(goal).sub(origin).normalize();
+    aimRotation.setFromUnitVectors(fromDirection, toDirection);
+    bone.getWorldQuaternion(worldRotation);
+    bone.parent.getWorldQuaternion(parentRotation).invert();
+    bone.quaternion.copy(parentRotation.multiply(aimRotation).multiply(worldRotation));
+    group.updateMatrixWorld(true);
+  }
+  function poseWebLeg(state, dt) {
+    const attached = !!state.webTarget && !state.grounded && !state.hanging;
+    if (attached) {
+      if (webPose < .001) lastWebTarget.copy(state.webTarget);
+      else lastWebTarget.lerp(state.webTarget, 1-Math.exp(-dt*16));
+    }
+    webPose = state.grounded || state.hanging ? 0 : THREE.MathUtils.damp(webPose, attached ? 1 : 0, attached ? 22 : 9, dt);
+    if (webPose < .001) return;
+    // Remove the running cycle from the hanging limbs before aiming the support leg.
+    for (const {bone,rotation} of limbRest) bone.quaternion.slerp(rotation, webPose);
+    forelegs[0].quaternion.multiply(offset.setFromAxisAngle(axisX, .75 * webPose));
+    lowerlegs[0].quaternion.multiply(offset.setFromAxisAngle(axisX, -1.45 * webPose));
+    for (const bone of hindlegs) bone.quaternion.multiply(offset.setFromAxisAngle(axisX, .25 * webPose));
+    group.updateMatrixWorld(true);
+    supportingArm.getWorldPosition(shoulderPoint);
+    supportingElbow.getWorldPosition(elbowPoint);
+    webHoof.getWorldPosition(hoofPoint);
+    const upperLength = shoulderPoint.distanceTo(elbowPoint), lowerLength = elbowPoint.distanceTo(hoofPoint);
+    reachDirection.copy(lastWebTarget).sub(shoulderPoint).normalize();
+    // Anatomical reach stays above the chest, even with an anchor behind the horse.
+    group.getWorldQuaternion(worldRotation);
+    reachDirection.applyQuaternion(parentRotation.copy(worldRotation).invert());
+    reachDirection.set(THREE.MathUtils.clamp(reachDirection.x,-.65,.65), Math.max(.35,reachDirection.y), Math.min(-.15,reachDirection.z)).normalize().applyQuaternion(worldRotation);
+    const reach = (upperLength + lowerLength) * .93;
+    hoofGoal.copy(shoulderPoint).addScaledVector(reachDirection, reach);
+    bendDirection.set(0,-1,0).applyQuaternion(worldRotation);
+    bendDirection.addScaledVector(reachDirection,-bendDirection.dot(reachDirection)).normalize();
+    const along = (upperLength*upperLength + reach*reach - lowerLength*lowerLength) / (2*reach);
+    elbowGoal.copy(shoulderPoint).addScaledVector(reachDirection,along).addScaledVector(bendDirection,Math.sqrt(Math.max(0,upperLength*upperLength-along*along)));
+    const originalArm = supportingArm.quaternion.clone(), originalElbow = supportingElbow.quaternion.clone();
+    aimJoint(supportingArm,supportingElbow,elbowGoal);
+    aimJoint(supportingElbow,webHoof,hoofGoal);
+    supportingArm.quaternion.slerp(originalArm,1-webPose);
+    supportingElbow.quaternion.slerp(originalElbow,1-webPose);
+    group.updateMatrixWorld(true);
+  }
 
   function update(dt, state = {}) {
     // The pause menu passes zero: neither clip time nor secondary motion advances.
@@ -268,6 +327,7 @@ export async function createHorse() {
       updateAnkleSilk();
       group.updateMatrixWorld(true);
     }
+    poseWebLeg(state, dt);
     for (const mesh of meshes) if (mesh.isSkinnedMesh) mesh.skeleton.update();
   }
 

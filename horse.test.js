@@ -72,19 +72,19 @@ test('horse asset contains real skinned geometry, embedded PBR maps and continuo
   }
 });
 
-test('model faces forward, stands on its soles and tether follows the actual saddle', async t => {
+test('model faces forward, stands on its soles and tether follows the actual hoof', async t => {
   const horse = await horseFixture(t);
   horse.group.updateMatrixWorld(true);
   assert.ok(positionOf(horse, 'head').z < positionOf(horse, 'tail_01').z);
   const box = new THREE.Box3().setFromObject(horse.group, true);
   assert.ok(Math.abs(box.min.y) < 0.01, `soles at ${box.min.y}`);
   assert.ok(box.max.y > 2 && box.max.y < 2.25);
-  assert.equal(horse.attachment.parent.name, 'saddle_socket');
+  assert.equal(horse.attachment.parent.name, 'finger_R');
   const before = horse.attachment.getWorldPosition(new THREE.Vector3());
   advance(horse, 0.6, { grounded: true, speed: 8 });
   const after = horse.attachment.getWorldPosition(new THREE.Vector3());
-  assert.ok(after.distanceTo(before) > 0.005, 'attachment should follow authored spine motion');
-  assert.ok(after.distanceTo(positionOf(horse, 'saddle_socket')) < 0.15);
+  assert.ok(after.distanceTo(before) > 0.005, 'attachment should follow hoof motion');
+  assert.ok(after.distanceTo(positionOf(horse, 'finger_R')) < 0.001);
 });
 
 test('all four hooves keep galloping in the air, even at the apex or extreme airspeed', async t => {
@@ -251,4 +251,31 @@ test('zip arrival immediately stops the legs, while rooftop running still animat
   const stopped=feet.map(name=>positionOf(horse,name));
   advance(horse,.3,standing);
   feet.forEach((name,i)=>assert.ok(positionOf(horse,name).distanceTo(stopped[i])<1e-6));
+});
+
+
+test('web hoof reaches upward toward anchors and returns to a planted pose on landing', async t => {
+  const horse=await horseFixture(t);
+  for(const target of [{x:0,y:30,z:-20},{x:20,y:25,z:-10},{x:-20,y:25,z:10}]) {
+    advance(horse,.6,{grounded:false,speed:35,swinging:true,webTarget:target});
+    const hoof=positionOf(horse,'finger_R'), shoulder=positionOf(horse,'upperarm_R');
+    assert.ok(hoof.y>shoulder.y, 'supporting hoof must rise above its shoulder');
+    assert.ok(horse.attachment.getWorldPosition(new THREE.Vector3()).distanceTo(hoof)<1e-6);
+    assert.ok(snapshot(horse).every(Number.isFinite));
+  }
+  horse.update(1/60,{grounded:true,perched:true,speed:0});
+  assert.ok(positionOf(horse,'finger_R').y<.3, 'landing restores standing legs immediately');
+});
+
+
+test('hoof reach pauses exactly and fades back to flight after release', async t => {
+  const horse=await horseFixture(t);
+  const swing={grounded:false,speed:30,webTarget:{x:0,y:25,z:-20}};
+  advance(horse,.8,swing);
+  const posed=snapshot(horse);
+  horse.update(0,swing);
+  assert.deepEqual(snapshot(horse),posed);
+  advance(horse,1,{grounded:false,speed:30});
+  assert.ok(positionOf(horse,'finger_R').y<positionOf(horse,'upperarm_R').y);
+  assert.ok(snapshot(horse).every(Number.isFinite));
 });

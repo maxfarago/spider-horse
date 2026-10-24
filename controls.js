@@ -35,10 +35,12 @@ export function bindJoystick(surface, { enabled, change }) {
   let pointer = null;
   const update = event => {
     const rect = surface.getBoundingClientRect();
-    const value = Math.max(-1, Math.min(1, (event.clientX - rect.left - rect.width / 2) / (rect.width * .35)));
-    change(Math.abs(value) < .12 ? 0 : value);
+    const x = (event.clientX - rect.left - rect.width / 2) / (rect.width * .35);
+    const y = (event.clientY - rect.top - rect.height / 2) / (rect.height * .35);
+    const magnitude = Math.hypot(x, y), scale = Math.max(1, magnitude);
+    change(Math.abs(x / scale) < .12 ? 0 : x / scale, Math.abs(y / scale) < .12 ? 0 : y / scale);
   };
-  const clear = () => { if (pointer === null) return; pointer = null; change(0); };
+  const clear = () => { if (pointer === null) return; pointer = null; change(0, 0); };
   surface.addEventListener('pointerdown', event => {
     if (pointer !== null || event.button !== 0 || !enabled()) return;
     event.preventDefault(); pointer = event.pointerId; surface.setPointerCapture(pointer); update(event);
