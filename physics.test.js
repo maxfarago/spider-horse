@@ -1,3 +1,4 @@
+import { SwingOnboarding } from './onboarding.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDelivery, advanceDelivery } from './pony-express.js';
@@ -75,7 +76,7 @@ test('attachment favors a strong forward release over a safe but weaker launch',
   const best=p.evaluateAnchor(forward), weaker=p.evaluateAnchor(high), sideways=p.evaluateAnchor(lateral);
   assert.ok(best.release.forwardSpeed>weaker.release.forwardSpeed);
   assert.ok(best.score>weaker.score && best.score>sideways.score);
-  assert.ok(sideways.release.lateralSpeed>20);
+  assert.ok(sideways.release.lateralSpeed < 15, 'off-centre ledges preserve forward travel');
   assert.deepEqual(p.snapshot(),before,'predictions never mutate gameplay');
   assert.equal(p.findAnchor(),forward);
   assert.equal(p.attach(),true);assert.deepEqual(p.anchor,forward);
@@ -232,7 +233,7 @@ test('holding swing keeps one world-space anchor throughout the arc', () => {
   const physics = new SwingPhysics(avenueFixture());
   assert.ok(physics.attach());
   const original = { ...physics.anchor };
-  stepFor(physics, 20, { swingHeld: true, forward: 1 });
+  stepFor(physics, 20, { swingHeld: true, forward: 1, autoRelease: false });
   assert.equal(physics.attachmentCount, 1, 'passing a roof must not hand off');
   if (physics.anchor) assert.deepEqual(physics.anchor, original);
   // A broken cord must not silently attach elsewhere while the key is held.
@@ -356,7 +357,7 @@ test('real city anchors touch rendered rooftop ledges and stay fixed during a he
   const physics = new SwingPhysics({ ...city, spawn: { ...city.spawn, y: city.spawn.y + 55 }, fatalGround: true, initialVelocity: { x: 0, y: -18, z: -8 } });
   let original = null;
   for (let frame = 0; frame < 2400; frame += 1) {
-    physics.step(1 / 120, { swingHeld: true });
+    physics.step(1 / 120, { swingHeld: true, autoRelease: false });
     if (physics.anchor) {
       original ??= { ...physics.anchor };
       assert.deepEqual(physics.anchor, original);
@@ -1215,4 +1216,55 @@ test('anchor forecasts cull distant rooftop props without changing nearby collis
   };
   p.rankedAnchors();
   assert.ok(forecasts>0);
+});
+
+
+test('opening lesson catches after half a second and pauses on a fast rising arc before automatic release', () => {
+  const city = actualCityFixture();
+  const physics = new SwingPhysics({ ...city, spawn: { ...city.spawn, y: city.spawn.y + 55 }, initialVelocity: { x: 0, y: -18, z: -8 }, fatalGround: true });
+  const lesson = new SwingOnboarding(); lesson.reset();
+  for (let i = 0; i < 120 && !lesson.waiting; i++) {
+    physics.step(1 / 120); lesson.update(physics);
+  }
+  assert.equal(lesson.stage, 'hold');
+  assert.ok(Math.abs(physics.time - .5) < .01);
+  assert.ok(physics.vel.y < -25 && physics.vel.z < -7);
+  assert.ok(physics.attach(lesson.anchor)); lesson.press();
+  for (let i = 0; i < 600 && !lesson.waiting; i++) {
+    physics.step(1 / 120, { swingHeld: true, autoRelease: false }); lesson.update(physics);
+  }
+  assert.equal(lesson.stage, 'release');
+  assert.ok(physics.anchor, 'pause before automatic detachment');
+  assert.ok(physics.swingTelemetry().speed > 40);
+  assert.ok(physics.vel.y >= 10);
+  physics.release({ intentional: true }); lesson.release();
+  assert.equal(lesson.stage, 'done');
+  assert.equal(physics.anchor, null);
+  assert.ok(physics.soarUntil > physics.time);
+  for (let i = 0; i < 60; i++) physics.step(1 / 120);
+  assert.equal(physics.lost, false);
+});
+
+test('opening release prompt survives HUD polling and delayed input without automatic detachment', () => {
+  const city = actualCityFixture();
+  for (const pollEvery of [1, 9, 24, Infinity]) {
+    const p = new SwingPhysics({ ...city, spawn: { ...city.spawn, y: city.spawn.y + 55 }, initialVelocity: { x: 0, y: -18, z: -8 }, fatalGround: true });
+    const lesson = new SwingOnboarding(); lesson.reset();
+    for (let tick = 0; tick < 400 && !lesson.waiting; tick++) {
+      if (tick % pollEvery === 0) p.findAnchor();
+      p.step(1 / 120); lesson.update(p);
+    }
+    assert.equal(lesson.stage, 'hold');
+    // HUD work while paused must not change the candidate taught by the lesson.
+    for (let poll = 0; poll < 20; poll++) p.findAnchor();
+    assert.ok(p.attach(lesson.anchor)); lesson.press();
+    for (let tick = 0; tick < 600 && !lesson.waiting; tick++) {
+      p.step(1 / 120, { swingHeld: true, autoRelease: false }); lesson.update(p);
+    }
+    assert.equal(lesson.stage, 'release', `HUD cadence ${pollEvery}`);
+    assert.ok(p.anchor);
+    assert.ok(p.time < 4 && p.vel.y >= 10);
+    assert.ok(Math.abs(p.vel.x) < 15, 'first swing does not pull hard across the avenue');
+    assert.ok(p.swingTelemetry().speed > 35);
+  }
 });

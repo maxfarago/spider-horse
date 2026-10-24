@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test traversal-feel.test.js physics.test.js horse.test.js web.test.js controls.test.js web-target.test.js anchor-camera.test.js pony-express.test.js",
-    "check": "node --check traversal-feel.js && node --check game.js && node --check city.js && node --check horse.js && node --check physics.js && node --check server.mjs && node --check cinematics.js && node --check web.js && node --check controls.js && node --check web-target.js && node --check anchor-camera.js && node --check pony-express.js",
+    "check": "node --check onboarding.js && node --check traversal-feel.js && node --check game.js && node --check city.js && node --check horse.js && node --check physics.js && node --check server.mjs && node --check cinematics.js && node --check web.js && node --check controls.js && node --check web-target.js && node --check anchor-camera.js && node --check pony-express.js",
     "build": "node build.mjs"
   },
   "engines": {
