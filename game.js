@@ -7,6 +7,7 @@ import { cameraClearance, revealAnchor, turnTowardAnchor, flightCameraFrame } fr
 import { bindHold, bindJoystick, bindLook, travelIntent, panView } from './controls.js';
 import { traversalFeel } from './traversal-feel.js';
 import { createDelivery, deliveryTarget, advanceDelivery } from './pony-express.js';
+import { SwingOnboarding } from './onboarding.js';
 import { SwingPhysics } from './physics.js';
 import { HDRLoader } from './vendor/HDRLoader.js';
 import { createCinematics } from './cinematics.js';
@@ -21,6 +22,7 @@ const webControlLabel = () => matchMedia('(max-width:760px), (pointer:coarse)').
 const preferences = { atmosphere: 'golden', quality: 'high', camera: 'chase', audio: false, reduceMotion: false };
 try { Object.assign(preferences, JSON.parse(localStorage.getItem('skystride.preferences') || '{}')); } catch { /* Private browsing still supports play. */ }
 let renderer, scene, camera, city, horse, physics, sun, ambient, fill, sky, skyMaterial, cinematics;
+const onboarding = new SwingOnboarding();
 let started = false, paused = false, mode = 'express', delivery, elapsed = 0, running = false;
 let now = 0, toastTimeout, renderFrames = 0, previousTime = performance.now(), accumulator = 0;
 let frameSelectedAnchor = false, facingAnchor = null, viewYaw = 0, previewAge = 0;
@@ -47,7 +49,7 @@ function toast(message, duration = 3000) {
 }
 function savePreferences() { try { localStorage.setItem('skystride.preferences', JSON.stringify(preferences)); } catch { /* Optional persistence. */ } }
 function anyDialog() { return document.querySelector('dialog[open]') !== null; }
-function clearInput() { displayedAnchor = null; keys.clear(); inputCleanups.forEach(clear => clear()); touchKeys.clear(); physics?.release(); if (physics) physics.pointZip = null; autoAttachTime = 0; }
+function clearInput() { displayedAnchor = null; keys.clear(); inputCleanups.forEach(clear => clear()); touchKeys.clear(); if (!['swing', 'release'].includes(onboarding.stage)) physics?.release(); if (physics) physics.pointZip = null; autoAttachTime = 0; }
 function openDialog(id) { clearInput(); $(id).showModal(); }
 function createSky() {
   skyMaterial = new THREE.ShaderMaterial({
@@ -251,7 +253,7 @@ async function boot() {
     $('loading').style.opacity = '0';
     setTimeout(() => $('loading').classList.add('hidden'), 650);
     $('intro').classList.remove('hidden');
-    window.skystride = { getState: () => ({ started, paused, mode, delivery: structuredClone(delivery), elapsed, running, physics: physics.snapshot(), drawCalls: cinematics.stats.calls, triangles: cinematics.stats.triangles }), start: launch, reset: resetRun };
+    window.skystride = { getState: () => ({ started, paused, onboarding: onboarding.stage, mode, delivery: structuredClone(delivery), elapsed, running, physics: physics.snapshot(), drawCalls: cinematics.stats.calls, triangles: cinematics.stats.triangles }), start: launch, reset: resetRun };
   } catch (error) {
     console.error(error); $('loading').classList.add('hidden'); $('error-screen').classList.remove('hidden');
     $('error-message').textContent = `The scene could not initialize: ${error.message}`;
@@ -270,13 +272,8 @@ function launch(nextMode = mode) {
   document.body.classList.add('playing'); $('intro').classList.add('hidden'); $('live-indicator').classList.remove('hidden'); $('reticle').classList.remove('hidden'); $('pause-chip').classList.add('hidden');
   horse.group.rotation.set(0, 0, 0, 'XYZ');
   physics.reset(); lastImpact = -1; lastReset = physics.resetCount; elapsed = 0; delivery.phase = 'pickup'; running = mode === 'express';
-  if (running) {
-    physics.pos = { x: delivery.start.x, y: delivery.start.y, z: delivery.start.z };
-    physics.vel = { x: 0, y: 0, z: 0 };
-    physics.grounded = true;
-    physics.yaw = Math.atan2(physics.pos.x - delivery.pickup.x, physics.pos.z - delivery.pickup.z);
-    viewYaw = physics.yaw;
-  }
+  onboarding.reset();
+  updateOnboarding();
   cameraTrackedHorse.set(physics.pos.x, physics.pos.y, physics.pos.z);
   camera.position.set(physics.pos.x + Math.sin(viewYaw) * 12, physics.pos.y + 5, physics.pos.z + Math.cos(viewYaw) * 12);
   cameraTarget.set(physics.pos.x, physics.pos.y, physics.pos.z); accumulator = 0;
@@ -284,8 +281,29 @@ function launch(nextMode = mode) {
   $('route-card').classList.toggle('hidden', mode === 'express');
   updateDelivery();
   clearTimeout(toastTimeout); $('toast').classList.remove('visible');
-  if (mode === 'roam') toast(`You’re falling! Hold ${webControlLabel()} to catch a rooftop.`, 5000);
   if (preferences.audio) enableAudio(); canvas.focus();
+}
+function updateOnboarding() {
+  const prompt = $('onboarding-prompt');
+  prompt.classList.toggle('hidden', !onboarding.waiting);
+  prompt.textContent = onboarding.stage === 'hold'
+    ? `hold ${webControlLabel() === 'Swing' ? 'SWING' : 'SPACE'} to start swinging`
+    : `release ${webControlLabel() === 'Swing' ? 'SWING' : 'SPACE'} to soar`;
+}
+function onboardingPress() {
+  if (onboarding.stage !== 'hold') return false;
+  if (!physics.attach(onboarding.anchor)) return false;
+  onboarding.press(); updateOnboarding(); tone(170, .065);
+  return true;
+}
+function releaseSwing(intentional) {
+  if (onboarding.stage === 'fall' || onboarding.stage === 'hold') return;
+  if (onboarding.stage === 'swing' && intentional) { launch(mode); return; }
+  if (onboarding.stage === 'release') {
+    if (!intentional) return;
+    onboarding.release(); updateOnboarding();
+  }
+  physics.release({intentional}); autoAttachTime = 0;
 }
 function loseRun() {
   running = false; paused = false; clearInput(); updateDelivery();
@@ -301,6 +319,7 @@ function finishRun() {
 }
 function setPaused(value) { paused = value; clearInput(); $('pause-chip').classList.toggle('hidden', !paused); if (!paused) canvas.focus(); }
 function quitToTitle() {
+  onboarding.stage = 'done'; updateOnboarding();
   clearInput(); started = false; paused = false; running = false;
   physics.reset(); updateDelivery();
   document.body.classList.remove('playing');
@@ -317,7 +336,7 @@ function startPivotReveal() {
 }
 function currentSteer() { return THREE.MathUtils.clamp(Number(held('ArrowLeft') || held('KeyA')) - Number(held('ArrowRight') || held('KeyD')) - joystickSteering, -1, 1); }
 function jumpAction() {
-  if (!started || paused || anyDialog() || physics.lost) return;
+  if (!started || paused || onboarding.stage !== 'done' || anyDialog() || physics.lost) return;
   physics.viewYaw = travelIntent(physics.vel, physics.yaw, currentSteer());
   const jumped = physics.contextualJump(travelIntent(physics.vel, physics.yaw, 0), pointTarget); autoAttachTime = 0;
   if (jumped && physics.pointZip) tone(380, .12);
@@ -363,6 +382,13 @@ function setupEvents() {
       return;
     }
     if (anyDialog()) return;
+    if (onboarding.waiting && !paused) {
+      if (event.code === 'Space') {
+        event.preventDefault();
+        if (!event.repeat) { keys.add('Space'); if (onboarding.stage === 'hold') onboardingPress(); }
+      }
+      if (event.code !== 'Escape') return;
+    }
     if (paused) {
       if (event.code === 'Space' || event.code === 'Escape') {
         event.preventDefault();
@@ -370,6 +396,7 @@ function setupEvents() {
       }
       return;
     }
+    if (onboarding.stage === 'fall' && event.code !== 'Escape') { event.preventDefault(); return; }
     if (event.code === 'Escape') { event.preventDefault(); if (started && !event.repeat) setPaused(true); return; }
     if (event.code === 'Slash') { event.preventDefault(); openDialog('controls-dialog'); return; }
     if (['Space', 'ShiftLeft', 'ShiftRight', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) event.preventDefault();
@@ -378,6 +405,7 @@ function setupEvents() {
       return;
     }
     if (paused) return;
+    if (onboarding.stage === 'swing' && !['Space', 'KeyR'].includes(event.code)) return;
     keys.add(event.code);
     if (event.repeat) return;
     if (event.code === 'Space') beginSwing();
@@ -387,11 +415,11 @@ function setupEvents() {
     if (event.code === 'KeyR') resetRun();
 
   });
-  addEventListener('keyup', (event) => { const wasHeld = keys.delete(event.code); if (wasHeld && event.code === 'Space' && !held('Space')) { physics.release({intentional:true}); autoAttachTime = 0; } });
+  addEventListener('keyup', (event) => { const wasHeld = keys.delete(event.code); if (wasHeld && event.code === 'Space' && !held('Space')) { releaseSwing(true); } });
   addEventListener('blur', () => { clearInput(); if (started && !anyDialog()) setPaused(true); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { clearInput(); if (started) setPaused(true); } previousTime = performance.now(); });
   inputCleanups.push(bindJoystick($('steering-joystick'), {
-    enabled: () => started && !physics.lost && !paused && !anyDialog(),
+    enabled: () => started && !physics.lost && !paused && !anyDialog() && onboarding.stage === 'done',
     change: (x, y) => {
       joystickSteering = x;
       joystickForward = -y;
@@ -399,7 +427,7 @@ function setupEvents() {
     },
   }));
   inputCleanups.push(bindLook(canvas, {
-    enabled: () => started && !physics.lost && !paused && !anyDialog(),
+    enabled: () => started && !physics.lost && !paused && !anyDialog() && onboarding.stage === 'done',
     change: (dx,dy) => { orbit -= dx * .005; pitch = THREE.MathUtils.clamp(pitch + dy * .003, -.35, .65); },
   }));
   canvas.addEventListener('dblclick', () => { orbit = 0; pitch = .1; });
@@ -408,15 +436,15 @@ function setupEvents() {
     const mapping = { swing: 'Space', left: 'ArrowLeft', right: 'ArrowRight' };
     const code = mapping[button.dataset.touch];
     inputCleanups.push(bindHold(button, {
-      enabled: () => started && !physics.lost && !paused && !anyDialog(),
+      enabled: () => started && !physics.lost && !paused && !anyDialog() && onboarding.stage !== 'fall',
       press: () => {
         if (button.dataset.touch !== 'swing') { touchKeys.add(code); return; }
         touchKeys.add(code);
-        if (code === 'Space') beginSwing();
+        if (code === 'Space' && !onboardingPress() && !onboarding.waiting) beginSwing();
       },
       release: (released) => {
         touchKeys.delete(code);
-        if (code === 'Space' && !held('Space')) { physics.release({intentional:released}); autoAttachTime = 0; }
+        if (code === 'Space' && !held('Space')) { releaseSwing(released); }
       },
     }));
   });
@@ -425,7 +453,7 @@ function setupEvents() {
 function updatePhysics(dt) {
   if (physics.lost) return { turn: 0, forward: 0 };
   const wasPerched = !!physics.perch;
-  const steer = currentSteer();
+  const steer = onboarding.stage === 'done' ? currentSteer() : 0;
   const turn = physics.grounded ? 0 : steer, reel = 0;
   if (physics.grounded) physics.yaw = panView(physics.yaw, () => false, dt, -steer);
   physics.viewYaw = travelIntent(physics.vel, physics.yaw, steer);
@@ -436,7 +464,13 @@ function updatePhysics(dt) {
   viewYaw += difference * (1-Math.exp(-dt*4));
   // Steering brings the optional look offset back behind the horse.
   if (Math.abs(steer) > .05) orbit *= Math.exp(-dt * 4);
-    physics.step(dt, { turn, forward, strafe, reel, swingHeld: held('Space'), swingTarget: undefined, boost: false });
+  physics.step(dt, { turn, forward, strafe, reel, swingHeld: onboarding.stage === 'fall' ? false : held('Space'), swingTarget: undefined, autoRelease: onboarding.stage === 'done', boost: false });
+  const previousStage = onboarding.stage;
+  onboarding.update(physics);
+  if (previousStage !== onboarding.stage) {
+    if (onboarding.stage === 'hold') clearInput();
+    updateOnboarding();
+  }
   if (!wasPerched && physics.perch) tone(180, .09);
   if (physics.lost) { loseRun(); return { turn: 0, forward: 0 }; }
   if ((physics.attachmentCount || 0) !== lastAttachmentCount) { lastAttachmentCount = physics.attachmentCount || 0; ropeRipple = 1; tone(190, .065); }
@@ -722,7 +756,7 @@ function toggleAudio(value) { preferences.audio = value; if (value) enableAudio(
 function updateSoundButton() { $('sound-button').setAttribute('aria-label', preferences.audio ? 'Mute sound' : 'Enable sound'); $('sound-button').innerHTML = preferences.audio ? '<svg viewBox="0 0 24 24"><path d="m11 5-6 4H2v6h3l6 4V5Zm4 3c2 2 2 6 0 8m3-11c4 4 4 10 0 14"/></svg>' : '<svg viewBox="0 0 24 24"><path d="m11 5-6 4H2v6h3l6 4V5Zm5 4 5 6m0-6-5 6"/></svg>'; }
 function updateAudio() {
   if (!audioContext || !windGain) return;
-  const active = preferences.audio && !paused && !anyDialog() && started;
+  const active = preferences.audio && !onboarding.waiting && !paused && !anyDialog() && started;
   const speed = Math.hypot(physics.vel.x, physics.vel.y, physics.vel.z);
   windGain.gain.setTargetAtTime(active ? Math.min(.35, speed / 180) : 0, audioContext.currentTime, .2);
   windFilter.frequency.setTargetAtTime(300 + speed * 35, audioContext.currentTime, .2);
@@ -732,12 +766,12 @@ function frame(time) {
   requestAnimationFrame(frame);
   if (document.hidden) { previousTime = time; return; }
   const dt = Math.min((time - previousTime) / 1000, .05); previousTime = time;
-  const playing = started && !physics.lost && !paused && !anyDialog();
+  const playing = started && !physics.lost && !paused && !onboarding.waiting && !anyDialog();
   if (playing || !started) now += dt;
   let input = { turn: 0, forward: 0 };
   if (playing) {
     accumulator += dt;
-    while (accumulator >= 1 / 120 && !physics.lost && !anyDialog()) { input = updatePhysics(1 / 120); accumulator -= 1 / 120; }
+    while (accumulator >= 1 / 120 && !physics.lost && !paused && !onboarding.waiting && !anyDialog()) { input = updatePhysics(1 / 120); accumulator -= 1 / 120; }
   } else accumulator = 0;
   const visualDt = (playing && !physics.lost) || !started ? dt : 0;
   updateHorse(visualDt, input); updateCamera(visualDt); updateRope(); updateParticles();

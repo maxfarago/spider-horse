@@ -401,7 +401,7 @@ export class SwingPhysics {
     return wasAttached;
   }
 
-  maintainHeldSwing(candidate = undefined) {
+  maintainHeldSwing(candidate = undefined, autoRelease = true) {
     if (this.time >= this.swingRearmAt) { this.heldAttachmentSpent = false; this.swingRearmAt = Infinity; }
     if (this.anchor && !this.grounded && !this.lost) {
       const forward = this.vel.x * this.catchForwardX + this.vel.z * this.catchForwardZ;
@@ -410,7 +410,7 @@ export class SwingPhysics {
       const angle = Math.atan2(Math.hypot(state.radial.x, state.radial.z), -state.radial.y);
       // Finish the useful ascending arc before forward progress collapses.
       // Never force a release during the catch, initial dive, or slack flight.
-      if (this.time - this.attachedAt > .45 && this.vel.y > 2 &&
+      if (autoRelease && this.time - this.attachedAt > .45 && this.vel.y > 2 &&
           state.distance >= this.ropeLength - .3 && angle > Math.PI / 5 &&
           this.swingPeakForward > 12 && forward < this.swingPeakForward * .78) {
         this.release({intentional:true});
@@ -626,7 +626,7 @@ export class SwingPhysics {
     return true;
   }
 
-  step(dt, { forward = 0, strafe = 0, turn = 0, reel = 0, boost = false, swingHeld = false, swingTarget = undefined } = {}) {
+  step(dt, { forward = 0, strafe = 0, turn = 0, reel = 0, boost = false, swingHeld = false, swingTarget = undefined, autoRelease = true } = {}) {
     if (this.lost || !Number.isFinite(dt) || dt <= 0) return this.snapshot();
     // Drop excess time after a background tab resumes; never integrate a huge
     // single step. At normal frame rates the same fixed upper step is used.
@@ -641,6 +641,7 @@ export class SwingPhysics {
       boost: Boolean(boost),
       swingHeld: Boolean(swingHeld),
       swingTarget,
+      autoRelease,
     };
     for (let index = 0; index < count && !this.lost; index += 1) this.integrate(h, input);
     if (
@@ -676,7 +677,7 @@ export class SwingPhysics {
         this.resolveGround();return;
       }
     }
-    if (input.swingHeld) this.maintainHeldSwing(input.swingTarget);
+    if (input.swingHeld) this.maintainHeldSwing(input.swingTarget, input.autoRelease);
     else { this.heldAttachmentSpent = false; this.swingRearmAt = Infinity; }
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
@@ -872,13 +873,32 @@ export class SwingPhysics {
     radial.x /= distance;
     radial.y /= distance;
     radial.z /= distance;
-    const excess = distance - this.maxRopeLength;
-    this.move({ x: -radial.x * excess, y: -radial.y * excess, z: -radial.z * excess });
+    // Let the tether redirect falling motion into the travel plane without
+    // yanking sideways toward an off-centre ledge. An oblique projection still
+    // enforces the actual rope length; only the lateral response is softened.
+    const side = { x: -this.catchForwardZ, y: 0, z: this.catchForwardX };
+    const lateral = dot(radial, side);
+    const response = {
+      x: radial.x - side.x * lateral * .8,
+      y: radial.y,
+      z: radial.z - side.z * lateral * .8,
+    };
+    const responseLength2 = dot(response, response);
+    const alignment = dot(radial, response);
+    const discriminant = Math.max(0, distance ** 2 * alignment ** 2 - responseLength2 * (distance ** 2 - this.maxRopeLength ** 2));
+    const correction = (distance ** 2 - this.maxRopeLength ** 2) /
+      Math.max(1e-9, distance * alignment + Math.sqrt(discriminant));
+    this.move({ x: -response.x * correction, y: -response.y * correction, z: -response.z * correction });
     const outward = dot(this.vel, radial);
     if (outward > 0) {
-      this.vel.x -= radial.x * outward;
-      this.vel.y -= radial.y * outward;
-      this.vel.z -= radial.z * outward;
+      const before = length(this.vel);
+      const impulse = outward / Math.max(alignment, 1e-9);
+      this.vel.x -= response.x * impulse;
+      this.vel.y -= response.y * impulse;
+      this.vel.z -= response.z * impulse;
+      // The constraint redirects momentum but cannot create kinetic energy.
+      const scale = Math.min(1, before / Math.max(length(this.vel), 1e-9));
+      this.vel.x *= scale; this.vel.y *= scale; this.vel.z *= scale;
     }
     // A wall obstructing a shortened tether must never drag the horse through
     // a building. Break the tether while preserving the collision response.

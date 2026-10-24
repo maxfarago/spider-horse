@@ -120,7 +120,7 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
 
 /* Shared minimal HUD; retain the target diamond without its text label. */
 #live-indicator,#web-target,#anchor-label{display:none!important}
-#steering-joystick{width:108px;height:108px;border-radius:50%;border:1px solid #fff7;background:#182c3166;display:grid;place-items:center;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+#steering-joystick{width:108px;height:108px;border-radius:50%;border:1px solid #fff7;background:#182c3166;display:grid;place-items:center;pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #joystick-thumb{width:46px;height:46px;border-radius:50%;background:#faf4e8dd;border:1px solid #fff9;box-shadow:0 4px 18px #0003;pointer-events:none}
 @media(max-width:760px),(pointer:coarse){
   .playing #mobile-controls{display:block!important;position:absolute;width:108px;height:108px;z-index:20;left:max(16px,env(safe-area-inset-left))!important;right:auto!important;bottom:max(24px,env(safe-area-inset-bottom))!important}
@@ -149,3 +149,12 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
  #minimap-wrap{width:128px;height:128px}
 }
 @media(max-height:500px){#minimap-wrap{width:104px;height:104px}}
+
+.onboarding-prompt {
+  position: absolute; z-index: 20; left: 50%; top: 64%;
+  transform: translateX(-50%); width: max-content; max-width: calc(100% - 40px);
+  padding: 20px 28px; border: 1px solid rgba(255,225,166,.65); border-radius: 16px;
+  background: rgba(16,23,30,.94); color: #fff4db; box-shadow: 0 12px 48px #0007;
+  font-size: clamp(18px, 2.4vw, 28px); font-weight: 600; text-align: center;
+  pointer-events: none;
+}
