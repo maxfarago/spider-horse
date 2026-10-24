@@ -321,7 +321,41 @@ export function createCity(scene) {
   pavementMaterial(asphalt, false); pavementMaterial(sidewalk, true);
 
   // A continuous water surface surrounds the long, narrow island on every side.
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(16000, 16000), new THREE.MeshStandardMaterial({ color: '#6c8e93', roughness: .3, metalness: .45 }));
+  const waterTime = {value:0};
+  const waterMaterial = new THREE.MeshPhysicalMaterial({color:'#164b59',roughness:.27,metalness:0,ior:1.333,envMapIntensity:1.25});
+  // Animate surface normals, not geometry: the ocean remains one two-triangle draw.
+  // Reflections use the existing prefiltered sky, with no second scene render.
+  waterMaterial.onBeforeCompile = shader => {
+    shader.uniforms.waterTime = waterTime;
+    shader.uniforms.islandCoast = {value:new THREE.Vector4(island.minX,island.maxX,island.minZ,island.maxZ)};
+    shader.vertexShader = 'varying vec2 waterXZ;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nwaterXZ = (modelMatrix * vec4(position, 1.0)).xz;');
+    shader.fragmentShader = 'varying vec2 waterXZ; uniform float waterTime; uniform vec4 islandCoast;\n' + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', `
+      #include <normal_fragment_maps>
+      vec2 p = waterXZ;
+      float t = waterTime;
+      float pixelFootprint = max(length(dFdx(p)),length(dFdy(p)));
+      float drift = sin(dot(p,vec2(.043,-.037))+t*.13)*1.6;
+      vec2 slope = vec2(.10,.03)*cos(dot(p,vec2(.55,.16))-t*.85+drift)*(1.0-smoothstep(.5,3.0,pixelFootprint*.57))
+                 + vec2(-.035,.08)*cos(dot(p,vec2(-.31,.69))+t*1.1+drift*.7)*(1.0-smoothstep(.5,3.0,pixelFootprint*.76))
+                 + vec2(.04,.03)*cos(dot(p,vec2(1.7,1.23))-t*1.6)*(1.0-smoothstep(.5,3.0,pixelFootprint*2.1))
+                 + vec2(-.018,.025)*cos(dot(p,vec2(-3.1,4.3))+t*2.0)*(1.0-smoothstep(.5,3.0,pixelFootprint*5.3));
+      float rippleFade = 1.0-smoothstep(220.0,1100.0,length(vViewPosition));
+      normal = normalize(mat3(viewMatrix)*vec3(-slope.x*rippleFade,1.0,-slope.y*rippleFade));
+    `);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `
+      #include <color_fragment>
+      vec2 outside = max(vec2(islandCoast.x-waterXZ.x, islandCoast.z-waterXZ.y),vec2(waterXZ.x-islandCoast.y,waterXZ.y-islandCoast.w));
+      float coastDistance = length(max(outside,vec2(0.0)));
+      float shore = (1.0-smoothstep(0.0,5.0,coastDistance))*step(0.01,max(outside.x,outside.y));
+      float wash = .5+.5*sin(coastDistance*3.0-waterTime*1.2 + sin(waterXZ.x*.6+waterXZ.y*.4));
+      diffuseColor.rgb = mix(diffuseColor.rgb,vec3(.19,.38,.37),shore*.55);
+      diffuseColor.rgb += vec3(.22,.28,.26)*shore*pow(wash,5.0)*.55;
+    `);
+  };
+  waterMaterial.customProgramCacheKey = () => 'island-water-ripples-v1';
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(16000, 16000), waterMaterial);
   water.name = 'Surrounding island water';
   water.rotation.x = -Math.PI / 2; water.position.set(0, -1.2, islandCenterZ); water.receiveShadow = true; group.add(water);
   cube(asphalt, 0, -1, islandCenterZ, islandWidth, 2, groundLength);
@@ -670,6 +704,6 @@ export function createCity(scene) {
     buildings, rooftopObstacles, island, waterLevel: water.position.y, anchors: safeAnchors,
     spawn: new THREE.Vector3(0, 69, 50),
     bounds: { minX: layout.minX, maxX: layout.maxX, minZ: layout.minZ, maxZ: layout.maxZ },
-    update(_dt, time) { water.material.color.setHSL(.53, .13, .43 + Math.sin(time * .16) * .008); },
+    update(_dt, time, reduceMotion = false) { waterTime.value = reduceMotion ? 0 : time; },
   };
 }

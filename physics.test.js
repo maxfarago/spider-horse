@@ -1193,3 +1193,26 @@ test('all four coasts allow outward flight and water contact ends the run', () =
     p.reset();assert.equal(p.lost,false);
   }
 });
+
+test('anchor forecasts cull distant rooftop props without changing nearby collision predictions', () => {
+  const city=actualCityFixture();
+  const p=new SwingPhysics({...city,spawn:{x:0,y:100,z:50}});
+  const evaluate=p.evaluateAnchor;
+  let forecasts=0;
+  p.evaluateAnchor=function(anchor,buildings,obstacles,props) {
+    forecasts++;
+    assert.ok(props.length<this.rooftopObstacles.length/4, 'forecasts must not scan the entire island');
+    const expected=this.rooftopObstacles.filter(b=>b.maxX>this.pos.x-240 && b.minX<this.pos.x+240 && b.maxZ>this.pos.z-240 && b.minZ<this.pos.z+240);
+    assert.deepEqual(props,expected,'all nearby rooftop collisions remain available');
+    const result=evaluate.call(this,anchor,buildings,obstacles,props);
+    if(forecasts===1) {
+      const full=evaluate.call(this,anchor,buildings,obstacles,this.rooftopObstacles);
+      assert.equal(result.score,full.score);
+      assert.equal(result.impact,full.impact);
+      assert.equal(result.samplesUsed,full.samplesUsed);
+    }
+    return result;
+  };
+  p.rankedAnchors();
+  assert.ok(forecasts>0);
+});

@@ -70,7 +70,7 @@ test('only an intentional pointer-up requests a spring launch', () => {
 test('joystick tracks one finger, ignores unrelated touches and resets on cancellation', async () => {
   const { bindJoystick, panView } = await import('./controls.js');
   const surface = new Surface(), values = [];
-  surface.getBoundingClientRect = () => ({left:0,width:100});
+  surface.getBoundingClientRect = () => ({left:0,top:-50,width:100,height:100});
   let enabled = true;
   const clear = bindJoystick(surface,{enabled:()=>enabled,change:value=>values.push(value)});
   surface.pointer('pointerdown',1,85);
@@ -109,4 +109,26 @@ test('camera look tracks one pointer independently and stops on cleanup', async 
   send('pointerdown',1,10,10);send('pointermove',2,40,40);send('pointermove',1,20,15);
   assert.deepEqual(moves,[[10,5]]);
   clear();send('pointermove',1,30,30);assert.equal(moves.length,1);
+});
+
+
+test('joystick supplies rooftop forward/back input, clamps diagonals, and clears both axes', async () => {
+  const {bindJoystick}=await import('./controls.js');
+  const surface=new Surface();surface.getBoundingClientRect=()=>({left:10,top:20,width:100,height:100});
+  let value;
+  const clear=bindJoystick(surface,{enabled:()=>true,change:(x,y)=>{value={x,y};}});
+  surface.pointer('pointerdown',1,60,35);
+  assert.deepEqual(value,{x:0,y:-1});
+  surface.pointer('pointermove',1,60,105);
+  assert.deepEqual(value,{x:0,y:1});
+  surface.pointer('pointermove',1,130,140);
+  assert.ok(Math.abs(Math.hypot(value.x,value.y)-1)<1e-9);
+  surface.pointer('pointermove',2,60,35);
+  assert.ok(value.y>0,'a second finger on Swing must not change movement');
+  clear();assert.deepEqual(value,{x:0,y:0});
+  surface.pointer('pointerdown',3,60,70);
+  assert.deepEqual(value,{x:0,y:0});
+  surface.pointer('pointermove',3,60,35);
+  surface.pointer('pointerup',3);
+  assert.deepEqual(value,{x:0,y:0});
 });

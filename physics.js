@@ -145,10 +145,10 @@ export class SwingPhysics {
 
   // Forecast the first useful release, then check a short stretch of its flight.
   // Copies own mutable vectors; ranking never advances the real horse.
-  evaluateAnchor(anchor, buildings = this.buildings, obstacles = this.ropeObstacles) {
+  evaluateAnchor(anchor, buildings = this.buildings, obstacles = this.ropeObstacles, rooftopObstacles = this.rooftopObstacles) {
     const preview = Object.assign(Object.create(SwingPhysics.prototype), this, {
       pos: copy(this.pos), vel: copy(this.vel), anchor: null, lastImpact: null,
-      buildings, ropeObstacles: obstacles, fatalGround: true,
+      buildings, rooftopObstacles, ropeObstacles: obstacles, fatalGround: true,
     });
     preview.connect(anchor);
     const speed = Math.hypot(this.vel.x, this.vel.z);
@@ -205,8 +205,8 @@ export class SwingPhysics {
     const ahead = a => this.viewAlignment(a) >= Math.cos(50 * Math.PI / 180);
     const pool = [...nearby.filter(ahead).slice(0,12), ...nearby.filter(a => !ahead(a)).slice(0,12)];
     const local = boxes => boxes.filter(b => b.maxX > this.pos.x-240 && b.minX < this.pos.x+240 && b.maxZ > this.pos.z-240 && b.minZ < this.pos.z+240);
-    const buildings = local(this.buildings), obstacles = local(this.ropeObstacles);
-    const evaluations = pool.map(a => this.evaluateAnchor(a, buildings, obstacles)).sort((a,b) => b.score-a.score);
+    const buildings = local(this.buildings), obstacles = local(this.ropeObstacles), rooftopObstacles = local(this.rooftopObstacles);
+    const evaluations = pool.map(a => this.evaluateAnchor(a, buildings, obstacles, rooftopObstacles)).sort((a,b) => b.score-a.score);
     const ranked = evaluations.map(result => result.anchor);
     this.anchorRanking = { time:this.time, pos:copy(this.pos), vel:copy(this.vel), yaw:this.yaw, viewYaw:this.viewYaw, ranked, evaluations };
     return ranked;
