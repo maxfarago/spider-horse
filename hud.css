@@ -292,3 +292,15 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
 
 #intro .intro-copy{opacity:.85;white-space:nowrap;color:var(--paper)}
 #intro .intro-copy>span{padding:0 8px}
+
+/* Preserve square tutorial artwork even when desktop text makes the card taller. */
+.onboarding-prompt.has-art .lesson-art{height:auto;min-height:0;aspect-ratio:1 / 1;align-self:center;object-fit:cover}
+
+/* Larger lesson artwork, with the card anchored above the horse. */
+@media(min-width:761px) and (pointer:fine){.onboarding-prompt.has-art{grid-template-columns:160px minmax(0,1fr)}}
+@media(max-width:760px),(pointer:coarse){.onboarding-prompt.has-art .lesson-art{width:160px;height:auto}}
+
+@media(max-width:760px),(pointer:coarse){
+ .lesson-control[data-action="nos"]{width:34px;height:18px;border:0;border-radius:0;background:none;box-shadow:none}
+ .lesson-control[data-action="nos"] .nos-mark{width:34px;height:16px}
+}
