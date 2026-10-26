@@ -1,6 +1,14 @@
 import * as THREE from './vendor/three.module.js';
 import { GLTFLoader } from './vendor/GLTFLoader.js';
 
+// Nose (-Z) points upward; the back (+Y) faces away from the façade.
+export function wallClimbOrientation(normal, target = new THREE.Quaternion()) {
+  const back = new THREE.Vector3(normal.x, 0, normal.z).normalize();
+  const rear = new THREE.Vector3(0, -1, 0);
+  const right = new THREE.Vector3().crossVectors(back, rear);
+  return target.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, back, rear));
+}
+
 // Warhorse Lite by Literock Studios. The embedded PBR maps, rig and authored
 // locomotion clips remain together; see assets/LICENSE.warhorse.txt.
 export async function createHorse() {
@@ -169,7 +177,7 @@ export async function createHorse() {
       if (webPose < .001) lastWebTarget.copy(state.webTarget);
       else lastWebTarget.lerp(state.webTarget, 1-Math.exp(-dt*16));
     }
-    webPose = state.grounded || state.hanging ? 0 : THREE.MathUtils.damp(webPose, attached ? 1 : 0, attached ? 22 : 9, dt);
+    webPose = state.grounded || state.hanging || state.wallNormal ? 0 : THREE.MathUtils.damp(webPose, attached ? 1 : 0, attached ? 22 : 9, dt);
     if (webPose < .001) return;
     // Remove the running cycle from the hanging limbs before aiming the support leg.
     for (const {bone,rotation} of limbRest) bone.quaternion.slerp(rotation, webPose);
@@ -210,8 +218,10 @@ export async function createHorse() {
       phasePose[phase] = state.hanging || state.perched ? 0 : THREE.MathUtils.damp(phasePose[phase], target, 12, dt);
     }
     const accent = state.reduceMotion ? .35 : 1;
-    speed = state.perched ? Math.max(0, state.speed || 0) : THREE.MathUtils.damp(speed, Math.max(0, state.speed || 0), 5, dt);
-    flight = state.perched ? 0 : THREE.MathUtils.damp(flight, state.grounded ? 0 : 1, state.grounded ? 8 : 5, dt);
+    const climbing = !!state.wallNormal;
+    const gaitSpeed = climbing ? Math.hypot(state.speed || 0, state.verticalSpeed || 0) : Math.max(0, state.speed || 0);
+    speed = state.perched ? gaitSpeed : THREE.MathUtils.damp(speed, gaitSpeed, climbing ? 16 : 5, dt);
+    flight = state.perched ? 0 : THREE.MathUtils.damp(flight, state.grounded || climbing ? 0 : 1, climbing ? 16 : state.grounded ? 8 : 5, dt);
     const ropeTension = THREE.MathUtils.clamp(state.tension || 0, 0, 1);
     const ropeExtension = THREE.MathUtils.clamp((state.stretch || 0) / 6, 0, 1);
     tension = THREE.MathUtils.damp(tension, ropeTension, 5, dt);
@@ -295,7 +305,7 @@ export async function createHorse() {
     // Additive poses distinguish a gathered catch from an extended release.
     // Mixer evaluation restores the authored transforms every frame.
     const gather = accent * (.24 * phasePose.catch + .1 * phasePose.swing + .2 * phasePose.vault);
-    const reach = accent * (.25 * phasePose.release + .18 * phasePose.soar + .14 * phasePose.wallRun);
+    const reach = accent * (.25 * phasePose.release + .18 * phasePose.soar);
     for (const bone of forelegs) bone.quaternion.multiply(offset.setFromAxisAngle(axisX, gather - reach));
     for (const bone of lowerlegs) bone.quaternion.multiply(offset.setFromAxisAngle(axisX, -gather * 1.3 + reach * .4));
     for (const bone of hindlegs) bone.quaternion.multiply(offset.setFromAxisAngle(axisX, -gather * .65 + reach * .65));

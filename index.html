@@ -28,7 +28,7 @@
     <div id="web-target" class="hidden"><span id="web-target-state">No ledge in reach</span><strong id="web-target-distance">—</strong></div>
     <div id="anchor-marker" class="anchor-marker hidden"><span>◇</span><small id="anchor-label">HOLD SPACE</small></div>
     <aside id="route-card" class="route-card"><button id="route-action">Play Pony Express</button></aside>
-    <div class="bottom-hud"><div id="minimap-wrap" class="minimap-wrap"><canvas id="minimap" width="384" height="384" role="img" aria-label="North-up minimap. Red arrow: your position and heading. Gold diamond: active package pickup or delivery, shown at the rim when farther away."></canvas></div>
+    <div class="bottom-hud"><div id="minimap-wrap" class="minimap-wrap"><canvas id="minimap" width="384" height="384" role="img" aria-label="Heading-up minimap. The map rotates with your direction; the red player arrow always points up. N marks north. Gold diamond: active package pickup or delivery, shown at the rim when farther away."></canvas></div>
     <div id="controls-strip" class="controls-strip"><span><kbd>W A S D</kbd> Steer</span><i></i><span><kbd>SPACE</kbd> Swing</span><i></i><span><kbd>SHIFT</kbd> Jump / zip</span><i></i><button id="controls-button"><kbd>?</kbd> Controls</button></div>
     <div class="telemetry">
 
@@ -42,11 +42,36 @@
 
     <button id="jump-action" aria-label="Jump or air zip">Jump</button>
     <button id="shoot-web" data-touch="swing" aria-pressed="false" aria-label="Swing"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3v34M3 20h34M8 8l24 24M8 32L32 8M20 8l8 4 4 8-4 8-8 4-8-4-4-8 4-8zM20 14l4 2 2 4-2 4-4 2-4-2-2-4 2-4z"/></svg><strong>Swing</strong></button>
-    <div id="onboarding-prompt" class="onboarding-prompt hidden" role="status" aria-live="assertive"></div>
-    <div id="pause-chip" class="menu-card hidden" role="dialog" aria-modal="true" aria-labelledby="pause-title"><h2 id="pause-title">Taking a breather</h2><p class="menu-shortcuts">Press <kbd>SPACE</kbd> to continue <span>•</span> Press <kbd>ESC</kbd> to quit</p></div>
+    <div id="onboarding-prompt" class="onboarding-prompt hidden" role="status" aria-live="assertive" aria-atomic="true">
+      <img id="lesson-art" class="lesson-art hidden" src="./assets/horse-speed-boost-square.png" width="1254" height="1254" alt="A horse in sunglasses speeding above the city at sunset." />
+      <h2 id="lesson-title"></h2>
+      <p class="lesson-action"><span id="lesson-verb"></span> <kbd id="lesson-key"></kbd> <span id="lesson-action"></span></p>
+      <p id="lesson-hint" class="lesson-hint"></p>
+    </div>
+    <div id="pause-chip" class="hidden" role="dialog" aria-modal="true" aria-labelledby="pause-title">
+      <div class="pause-panel">
+        <div id="pause-art" class="pause-art" role="img" aria-label="A horse taking a rooftop coffee break at sunset."></div>
+        <h2 id="pause-title">Out to pasture</h2>
+        <p class="pause-copy">You can't go web-slinging with a dead horse.</p>
+        <div class="pause-actions">
+          <button id="resume-button">Back in the saddle <kbd>SPACE</kbd></button>
+          <button id="pause-quit-button">Return to title <kbd>ESC</kbd></button>
+        </div>
+        <div class="pause-footer"><a href="https://max.horse">BACK TO <span>MAX.HORSE</span></a></div>
+      </div>
+    </div>
     <dialog id="controls-dialog"><button class="dialog-close" data-close aria-label="Close controls">×</button><h2>How to play</h2><p class="dialog-intro">Start in free fall and learn to swing and soar. Pony Express: follow the searchlight to collect the parcel on a rooftop, then land inside the marked circle on the destination building. Free roam starts in free fall. Ground contact ends the run.</p><div class="control-list"><div><kbd>← → / A D</kbd><span><strong>Steer</strong>Turn your travel direction. On rooftops, Up/Down or W/S move forward/back. Swing anchors follow your travel intent automatically.</span></div><div><kbd>SPACE</kbd><span><strong>Swing</strong>Hold to catch a building. Release to preserve your current trajectory. No manual ledge selection is needed.</span></div><div><kbd>SHIFT</kbd><span><strong>Jump / Zip / Launch</strong>Jump from a roof or swing. In flight, zip to the centered diamond if shown, otherwise air zip forward. Press again near perch arrival to launch. Once perched, run around the rooftop with the movement keys; its edges keep you safe. Press Shift to launch off.</span></div><div><kbd>LOOK</kbd><span><strong>Following camera</strong>Right-drag with a mouse, or drag the open scene on touch. Q recenters. The camera follows travel direction; steering recenters your view. Looking does not change targeting.</span></div><div><kbd>C / ESC</kbd><span><strong>Dive / pause</strong>C dives in free flight. Esc pauses; Space continues.</span></div></div><button id="school-launch" class="primary-button">Let’s go</button><p class="fine-print">Mobile: joystick left/right steers; up/down moves on rooftops. The camera follows. Hold Swing and use the second button for Jump, Zip, or Launch. Drag the scene to look optionally.</p></dialog>
     <dialog id="settings-dialog"><button class="dialog-close" data-close aria-label="Close settings">×</button><h2>Settings</h2><label class="setting-row">Atmosphere<select id="atmosphere-select"><option value="golden">Golden hour</option><option value="blue">Blue hour</option><option value="day">Clear day</option></select></label><label class="setting-row">Graphics<select id="quality-select"><option value="high">High detail</option><option value="balanced">Balanced</option></select></label><label class="setting-row">Camera<select id="camera-select"><option value="chase">Chase</option><option value="wide">Cinematic wide</option><option value="close">Close follow</option></select></label><label class="setting-row">City audio<input id="audio-toggle" type="checkbox" /></label><label class="setting-row">Reduce camera motion<input id="motion-toggle" type="checkbox" /></label><p class="fine-print">Your preferences are saved on this device.<br>Horse model by <a href="https://literock-studios.itch.io/warhorse-lite" target="_blank" rel="noopener noreferrer">Literock Studios</a>.</p><button id="settings-done" class="primary-button">Back to the game</button></dialog>
-    <dialog id="loss-dialog" class="menu-card" aria-labelledby="loss-title"><h2 id="loss-title">Try again!</h2><dl id="loss-stats" class="run-stats"><div><dd id="loss-time">0.0</dd><dt>seconds airborne</dt></div><div><dd id="loss-distance">0</dd><dt>metres travelled</dt></div></dl><p class="menu-shortcuts">Press <kbd>SPACE</kbd> to restart <span>•</span> Press <kbd>SHIFT</kbd> to switch mode</p></dialog>
+    <dialog id="loss-dialog" class="menu-card" aria-labelledby="loss-title">
+      <div id="loss-art" class="loss-art" role="img" aria-label="A horse in sunglasses resting against a bent streetlamp."></div>
+      <h2 id="loss-title">Unplanned dismount</h2>
+      <dl id="loss-stats" class="run-stats"><div><dd id="loss-time">0.0</dd><dt>seconds airborne</dt></div><div><dd id="loss-distance">0</dd><dt>metres travelled</dt></div></dl>
+      <div class="loss-actions">
+        <button id="loss-restart">Back in the saddle <kbd>SPACE</kbd></button>
+        <button id="loss-switch">Try Free Roam <kbd>SHIFT</kbd></button>
+      </div>
+      <div class="pause-footer"><a href="https://max.horse">BACK TO <span>MAX.HORSE</span></a></div>
+    </dialog>
     <dialog id="finish-dialog" class="menu-card" aria-labelledby="finish-title"><h2 id="finish-title">DELIVERED</h2><button id="play-again" class="primary-button">Next delivery</button></dialog>
     <div id="error-screen" class="hidden"><h2>The skyline couldn't load.</h2><p id="error-message">This game needs a browser with WebGL 2 enabled.</p><button onclick="location.reload()">Try again</button></div>
   </main>
