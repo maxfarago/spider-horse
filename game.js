@@ -19,8 +19,10 @@ const keys = new Set();
 const touchKeys = new Set(), inputCleanups = [];
 const held = code => keys.has(code) || touchKeys.has(code);
 const webControlLabel = () => matchMedia('(max-width:760px), (pointer:coarse)').matches ? 'Swing' : 'Space';
-const preferences = { atmosphere: 'golden', quality: 'high', camera: 'chase', audio: false, reduceMotion: false };
+const preferences = { atmosphere: 'golden', quality: 'high', camera: 'chase', audio: 'all', reduceMotion: false };
 try { Object.assign(preferences, JSON.parse(localStorage.getItem('skystride.preferences') || '{}')); } catch { /* Private browsing still supports play. */ }
+// Migrate the former boolean toggle to the new default mix.
+if (!['ambient', 'effects', 'all'].includes(preferences.audio)) preferences.audio = 'all';
 let renderer, scene, camera, city, horse, physics, sun, ambient, fill, sky, skyMaterial, cinematics;
 const onboarding = new SwingOnboarding();
 let started = false, paused = false, mode = 'express', delivery, elapsed = 0, running = false;
@@ -33,7 +35,7 @@ let pointTarget = null;
 let displayedAnchor = null, joystickSteering = 0, joystickForward = 0;
 let lastImpact = -1, lastReset = 0, lastUI = 0, autoAttachTime = 0;
 let previousTension = 0, ropeRipple = 0, lastAttachmentCount = 0;
-let audioContext, windGain, windFilter, cityGain;
+let audioContext, windGain, windFilter, cityGain, effectsGain, effectNoise;
 const particlePositions = new Float32Array(70 * 6);
 const cameraTrackedHorse = new THREE.Vector3(), cameraTravel = new THREE.Vector3();
 const cameraTarget = new THREE.Vector3(), desiredCamera = new THREE.Vector3(), desiredTarget = new THREE.Vector3();
@@ -248,7 +250,7 @@ async function boot() {
     skyMaterial.uniforms.hdrSky.value = cloudHDR; skyMaterial.uniforms.hasHDR.value = 1;
     makeEffects(); makeDelivery(); setQuality(); atmosphere();
     for (const [id, value] of [['atmosphere-select', preferences.atmosphere], ['quality-select', preferences.quality], ['camera-select', preferences.camera]]) $(id).value = value;
-    $('audio-toggle').checked = preferences.audio; $('motion-toggle').checked = preferences.reduceMotion;
+    $('audio-select').value = preferences.audio; $('motion-toggle').checked = preferences.reduceMotion;
     document.body.classList.toggle('touch-mode', matchMedia('(pointer:coarse)').matches);
     resize(); setupEvents(); drawMinimap();
     camera.position.set(1.2, city.spawn.y + 3.6, city.spawn.z + 15); cameraTarget.set(-8, city.spawn.y + 2, city.spawn.z - 35);
@@ -291,14 +293,14 @@ function launch(nextMode = mode) {
 function updateOnboarding() {
   const prompt = $('onboarding-prompt');
   prompt.classList.toggle('hidden', !onboarding.waiting);
-  const swing = webControlLabel() === 'Swing' ? 'SWING' : 'SPACE';
-  const shift = webControlLabel() === 'Swing' ? 'the action button' : 'SHIFT';
+  const swing = webControlLabel() === 'Swing' ? 'the web button' : 'SPACE';
+  const shift = webControlLabel() === 'Swing' ? (onboarding.stage === 'zip' ? 'ZIP' : 'NOS') : 'SHIFT';
   prompt.classList.toggle('reduce-motion', preferences.reduceMotion);
   const lesson = {
     boost: ['A little horse power', 'hit', shift, 'for speed boost', ''],
-    hold: ['Grab some sky', 'hold', swing, 'to start swinging', `Keep holding ${swing} until it’s time to let go.`],
+    hold: ['Grab some sky', 'hold', swing, 'to start swinging', 'Keep holding to swing'],
     release: ['Let it fly', 'release', swing, 'to soar', ''],
-    zip: ['Hoof to roof', 'hit', shift, 'to ZIP to ledge', ''],
+    zip: ['Hoof to roof', 'hit', shift, 'to snap to ledge', ''],
   }[onboarding.stage];
   const artwork = {
     boost: ['horse-speed-boost-square.png', 'A horse in sunglasses speeding above the city at sunset.'],
@@ -316,12 +318,19 @@ function updateOnboarding() {
   $('lesson-hint').classList.toggle('hidden', onboarding.stage !== 'hold');
   if (lesson) {
     ['lesson-title', 'lesson-verb', 'lesson-key', 'lesson-action', 'lesson-hint'].forEach((id, i) => { $(id).textContent = lesson[i]; });
+    // Reuse the live controls' artwork without their input handlers or button semantics.
+    const control = $('lesson-control');
+    const kind = ['hold', 'release'].includes(onboarding.stage) ? 'swing' : onboarding.stage === 'zip' ? 'zip' : 'nos';
+    control.dataset.action = kind;
+    control.setAttribute('aria-label', kind === 'swing' ? 'web button' : `${kind.toUpperCase()} button`);
+    const artwork = kind === 'swing' ? $('shoot-web').querySelector('svg') : $('jump-action').querySelector(kind === 'zip' ? '.zip-label' : '.nos-mark');
+    control.replaceChildren(artwork.cloneNode(true));
   }
 }
 function onboardingPress() {
   if (onboarding.stage !== 'hold') return false;
   if (!physics.attach(onboarding.anchor)) return false;
-  onboarding.press(); updateOnboarding(); tone(170, .065);
+  onboarding.press(); updateOnboarding(); soundEffect('web'); lastAttachmentCount = physics.attachmentCount || 0;
   return true;
 }
 function releaseSwing(intentional) {
@@ -331,6 +340,7 @@ function releaseSwing(intentional) {
     if (!intentional) return;
     onboarding.release(physics.time); updateOnboarding();
   }
+  if (intentional && physics.anchor) soundEffect('release');
   physics.release({intentional}); autoAttachTime = 0;
 }
 let lossArtIndex = 0;
@@ -351,7 +361,7 @@ function loseRun() {
   $('loss-switch').firstChild.textContent = mode === 'express' ? 'Try Free Roam ' : 'Try Pony Express ';
   $('loss-time').textContent = physics.time.toFixed(1);
   $('loss-distance').textContent = Math.round(physics.distanceTravelled).toLocaleString();
-  $('loss-dialog').showModal(); tone(70, .2);
+  $('loss-dialog').showModal(); soundEffect('impact');
 }
 function resetRun() { if (!started) return; launch(mode); toast(mode === 'express' ? 'Fresh start. Make this one count.' : 'Back above Midtown. Take the leap.'); }
 function finishRun() {
@@ -408,9 +418,10 @@ function currentSteer() { return THREE.MathUtils.clamp(Number(held('ArrowLeft') 
 function jumpAction() {
   if (!started || paused || (!onboarding.freeControl && !['boost', 'zip'].includes(onboarding.stage)) || anyDialog() || physics.lost) return;
   physics.viewYaw = travelIntent(physics.vel, physics.yaw, currentSteer());
+  const previousBoost = physics.airZipUntil;
   const jumped = physics.contextualJump(travelIntent(physics.vel, physics.yaw, 0), onboarding.stage === 'zip' ? onboarding.target : onboarding.stage === 'boost' ? null : pointTarget); autoAttachTime = 0;
   onboarding.shift(jumped, physics.time); updateOnboarding();
-  if (jumped && physics.pointZip) tone(380, .12);
+  if (jumped) soundEffect(physics.pointZip ? 'zip' : physics.airZipUntil > previousBoost ? 'boost' : 'jump');
 }
 function attachLedge(candidate) {
   physics.viewYaw = travelIntent(physics.vel, physics.yaw, currentSteer());
@@ -420,7 +431,7 @@ function beginSwing() {
   if (!started || paused || !onboarding.freeControl || anyDialog()) return;
   frameSelectedAnchor = false;
   if (physics.perch) { toast('SHIFT to launch from your perch.', 1600); return; }
-  if (attachLedge(undefined)) { tone(170, .08); autoAttachTime = 0; } else { autoAttachTime = 1.4; toast(physics.grounded ? 'No rooftop in reach. Jump with SHIFT and hold SPACE.' : 'Keep holding — waiting for a reachable ledge.', 1700); }
+  if (attachLedge(undefined)) { autoAttachTime = 0; } else { autoAttachTime = 1.4; toast(physics.grounded ? 'No rooftop in reach. Jump with SHIFT and hold SPACE.' : 'Keep holding — waiting for a reachable ledge.', 1700); }
 }
 function setupEvents() {
   addEventListener('resize', resize);
@@ -443,11 +454,9 @@ function setupEvents() {
   $('quality-select').onchange = (event) => { preferences.quality = event.target.value; setQuality(); };
   $('camera-select').onchange = (event) => { preferences.camera = event.target.value; savePreferences(); };
   $('motion-toggle').onchange = (event) => { preferences.reduceMotion = event.target.checked; savePreferences(); };
-  $('audio-toggle').onchange = (event) => toggleAudio(event.target.checked);
-  $('sound-button').onclick = () => toggleAudio(!preferences.audio);
+  $('audio-select').onchange = (event) => toggleAudio(event.target.value);
   $('resume-button').onclick = () => setPaused(false);
   $('pause-quit-button').onclick = quitToTitle;
-  updateSoundButton();
   addEventListener('keydown', (event) => {
     if ($('loss-dialog').open) {
       if (['Space', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
@@ -536,7 +545,7 @@ function setupEvents() {
 
 function updatePhysics(dt) {
   if (physics.lost) return { turn: 0, forward: 0 };
-  const wasPerched = !!physics.perch;
+  const wasPerched = !!physics.perch, wasGrounded = physics.grounded;
   const steer = onboarding.freeControl ? currentSteer() : 0;
   const turn = physics.grounded ? 0 : steer, reel = 0;
   if (physics.grounded) physics.yaw = panView(physics.yaw, () => false, dt, -steer);
@@ -560,12 +569,13 @@ function updatePhysics(dt) {
     if (onboarding.stage === 'hold') clearInput();
     updateOnboarding();
   }
-  if (!wasPerched && physics.perch) tone(180, .09);
+  const landed = (!wasPerched && physics.perch) || (!wasGrounded && physics.grounded);
+  if (landed && !physics.lost) soundEffect('land');
   if (physics.lost) { loseRun(); return { turn: 0, forward: 0 }; }
-  if ((physics.attachmentCount || 0) !== lastAttachmentCount) { lastAttachmentCount = physics.attachmentCount || 0; ropeRipple = 1; tone(190, .065); }
+  if ((physics.attachmentCount || 0) !== lastAttachmentCount) { lastAttachmentCount = physics.attachmentCount || 0; ropeRipple = 1; soundEffect('web'); }
   if (autoAttachTime > 0 && held('Space')) { autoAttachTime -= dt; if (attachLedge(undefined)) autoAttachTime = 0; }
   if (physics.resetCount !== lastReset) { lastReset = physics.resetCount; toast('Back in the city. Keep your line inside the island.'); }
-  if (physics.lastImpact && physics.lastImpact.time !== lastImpact) { lastImpact = physics.lastImpact.time; if (physics.lastImpact.speed > 16) tone(65, .08); }
+  if (physics.lastImpact && physics.lastImpact.time !== lastImpact) { lastImpact = physics.lastImpact.time; if (physics.lastImpact.speed > 16 && !landed) soundEffect('impact'); }
   if (running) {
     elapsed += dt;
     const event = advanceDelivery(delivery, physics);
@@ -755,7 +765,7 @@ function updateUI() {
   displayedAnchor = swingAnchor;
   const action = physics.contextualAction(travelIntent(physics.vel, physics.yaw, 0), onboarding.stage === 'zip' ? onboarding.target : undefined);
   pointTarget = action.target || null;
-  $('jump-action').textContent = action.label;
+  $('jump-action').dataset.action = ['perch', 'wait'].includes(action.kind) ? 'zip' : 'nos';
   $('jump-action').setAttribute('aria-label', action.label);
   $('jump-action').disabled = action.kind === 'wait';
   const anchor = pointTarget?.anchor || null;
@@ -869,6 +879,12 @@ function enableAudio() {
   try {
     if (!audioContext) {
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      effectsGain = audioContext.createGain();
+      effectsGain.gain.value = preferences.audio === 'ambient' ? 0 : 1;
+      effectsGain.connect(audioContext.destination);
+      effectNoise = audioContext.createBuffer(1, audioContext.sampleRate, audioContext.sampleRate);
+      const noise = effectNoise.getChannelData(0);
+      for (let i = 0; i < noise.length; i++) noise[i] = Math.random() * 2 - 1;
       const buffer = audioContext.createBuffer(1, audioContext.sampleRate * 3, audioContext.sampleRate), samples = buffer.getChannelData(0);
       let value = 0;
       for (let i = 0; i < samples.length; i++) { value = (value + (Math.random() * 2 - 1) * .02) / 1.02; samples[i] = value * 3.5; }
@@ -878,21 +894,58 @@ function enableAudio() {
       const hum = audioContext.createOscillator(); hum.type = 'sine'; hum.frequency.value = 57;
       cityGain = audioContext.createGain(); cityGain.gain.value = 0; hum.connect(cityGain).connect(audioContext.destination); hum.start();
     }
-    audioContext.resume();
+    audioContext.resume().catch(() => toast('Tap a control to enable audio.'));
   } catch { toast('Audio is unavailable in this browser.'); }
 }
 function tone(frequency, duration) {
-  if (!audioContext || !preferences.audio) return;
+  if (!audioContext || preferences.audio === 'ambient') return;
   const oscillator = audioContext.createOscillator(), gain = audioContext.createGain();
   oscillator.type = 'sine'; oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime); oscillator.frequency.exponentialRampToValueAtTime(frequency * .6, audioContext.currentTime + duration);
   gain.gain.setValueAtTime(.06, audioContext.currentTime); gain.gain.exponentialRampToValueAtTime(.001, audioContext.currentTime + duration);
-  oscillator.connect(gain).connect(audioContext.destination); oscillator.start(); oscillator.stop(audioContext.currentTime + duration);
+  oscillator.connect(gain).connect(effectsGain); oscillator.start(); oscillator.stop(audioContext.currentTime + duration);
+  oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
 }
-function toggleAudio(value) { preferences.audio = value; if (value) enableAudio(); $('audio-toggle').checked = value; savePreferences(); updateSoundButton(); }
-function updateSoundButton() { $('sound-button').setAttribute('aria-label', preferences.audio ? 'Mute sound' : 'Enable sound'); $('sound-button').innerHTML = preferences.audio ? '<svg viewBox="0 0 24 24"><path d="m11 5-6 4H2v6h3l6 4V5Zm4 3c2 2 2 6 0 8m3-11c4 4 4 10 0 14"/></svg>' : '<svg viewBox="0 0 24 24"><path d="m11 5-6 4H2v6h3l6 4V5Zm5 4 5 6m0-6-5 6"/></svg>'; }
+// Short synthesized foley: filtered air/silk transients plus a pitched body.
+const soundEffects = {
+  web: { duration: .14, filter: 'bandpass', from: 2600, to: 700, noise: .18, pitch: 320, end: 110 },
+  release: { duration: .22, filter: 'highpass', from: 900, to: 3600, noise: .09, pitch: 180, end: 340 },
+  zip: { duration: .34, filter: 'bandpass', from: 700, to: 5200, noise: .16, pitch: 220, end: 880 },
+  boost: { duration: .42, filter: 'lowpass', from: 400, to: 2800, noise: .2, pitch: 85, end: 240 },
+  jump: { duration: .18, filter: 'lowpass', from: 900, to: 250, noise: .12, pitch: 150, end: 75 },
+  land: { duration: .16, filter: 'lowpass', from: 1400, to: 180, noise: .2, pitch: 130, end: 55 },
+  impact: { duration: .28, filter: 'lowpass', from: 1800, to: 120, noise: .25, pitch: 95, end: 35 },
+};
+function soundEffect(name) {
+  if (!audioContext || preferences.audio === 'ambient') return;
+  const effect = soundEffects[name], t = audioContext.currentTime;
+  const source = audioContext.createBufferSource(), filter = audioContext.createBiquadFilter();
+  const noiseGain = audioContext.createGain(), body = audioContext.createOscillator(), bodyGain = audioContext.createGain();
+  source.buffer = effectNoise;
+  filter.type = effect.filter; filter.Q.value = .7;
+  filter.frequency.setValueAtTime(effect.from, t);
+  filter.frequency.exponentialRampToValueAtTime(effect.to, t + effect.duration);
+  for (const [gain, level] of [[noiseGain, effect.noise], [bodyGain, .07]]) {
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(level, t + .008);
+    gain.gain.exponentialRampToValueAtTime(.001, t + effect.duration);
+    gain.connect(effectsGain);
+  }
+  body.type = 'sine'; body.frequency.setValueAtTime(effect.pitch, t);
+  body.frequency.exponentialRampToValueAtTime(effect.end, t + effect.duration);
+  source.connect(filter).connect(noiseGain); body.connect(bodyGain);
+  source.start(t); body.start(t);
+  source.stop(t + effect.duration); body.stop(t + effect.duration);
+  source.onended = () => { source.disconnect(); filter.disconnect(); noiseGain.disconnect(); };
+  body.onended = () => { body.disconnect(); bodyGain.disconnect(); };
+}
+function toggleAudio(value) {
+  preferences.audio = value; enableAudio();
+  if (effectsGain) effectsGain.gain.setTargetAtTime(value === 'ambient' ? 0 : 1, audioContext.currentTime, .015);
+  $('audio-select').value = value; savePreferences(); updateAudio();
+}
 function updateAudio() {
   if (!audioContext || !windGain) return;
-  const active = preferences.audio && !onboarding.waiting && !paused && !anyDialog() && started;
+  const active = preferences.audio !== 'effects' && !physics.lost && !onboarding.waiting && !paused && !anyDialog() && started;
   const speed = Math.hypot(physics.vel.x, physics.vel.y, physics.vel.z);
   windGain.gain.setTargetAtTime(active ? Math.min(.35, speed / 180) : 0, audioContext.currentTime, .2);
   windFilter.frequency.setTargetAtTime(300 + speed * 35, audioContext.currentTime, .2);
