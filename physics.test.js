@@ -1,4 +1,4 @@
-import { SwingOnboarding } from './onboarding.js';
+import { SwingOnboarding, OPENING_SPAWN } from './onboarding.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDelivery, advanceDelivery } from './pony-express.js';
@@ -737,20 +737,35 @@ function wallFixture(height=30, xSpeed=0) {
   return new SwingPhysics({buildings:[{x:0,z:0,width:80,depth:20,height}],spawn:{x:0,y:24,z:25},initialVelocity:{x:xSpeed,y:0,z:-30}});
 }
 
-test('head-on building impact becomes a wall-run and a swept forward vault', () => {
-  const p=wallFixture();let wall=false,vault=false;
-  for(let i=0;i<210;i++) {
-    p.step(1/120);
-    wall ||= !!p.wallRun;
-    if(p.snapshot().traversalPhase==='vault') {
-      vault=true;
-      assert.ok(p.pos.y>32.2,'roof clearance precedes inward vault');
-      assert.ok(p.vel.z < -14,'vault restores forward travel');
-    }
-    assert.ok(!(p.pos.y<32.2 && p.pos.z<11.15 && p.pos.z>-11.15),'never penetrates the building');
+test('wall climb snaps onto the roof, stops, and accepts forward rooftop movement', () => {
+  for (const normal of [{x:0,z:1},{x:0,z:-1},{x:1,z:0},{x:-1,z:0}]) {
+    const p = new SwingPhysics({ buildings: [{x:0,z:0,width:40,depth:40,height:30,roofHeight:30.4}], spawn:{x:normal.x*35,y:24,z:normal.z*35}, initialVelocity:{x:-normal.x*30,y:0,z:-normal.z*30} });
+    let wall = false;
+    for (let i=0;i<240 && !p.perch;i++) { p.step(1/120); wall ||= !!p.wallRun; }
+    assert.ok(wall && p.perch, 'climb finishes on the roof');
+    assert.equal(p.grounded,true);
+    assert.ok(Math.abs(p.pos.y-32.602)<1e-8, 'standing soles match the visible roof slab');
+    assert.deepEqual(p.vel,{x:0,y:0,z:0});
+    const landed={...p.pos};
+    for(let i=0;i<30;i++)p.step(1/120);
+    assert.deepEqual(p.pos,landed,'no uncontrolled drift after climbing');
+    for(let i=0;i<60;i++)p.step(1/120,{forward:1});
+    assert.ok((p.pos.x-landed.x)*-normal.x+(p.pos.z-landed.z)*-normal.z>1,'Up walks inward onto the roof');
+    assert.ok(p.grounded);
+    assert.ok(p.jump());
+    assert.equal(p.perch,null);
+    assert.equal(p.grounded,false);
   }
-  assert.ok(wall && vault);
-  assert.ok(p.pos.z<5,'crosses onto the roof instead of stopping at facade');
+});
+
+test('wall climb cannot snap through a rooftop obstacle', () => {
+  const p = new SwingPhysics({buildings:[{x:0,z:0,width:40,depth:40,height:30}],rooftopObstacles:[{x:0,z:18,width:10,depth:4,minY:30,height:38}],spawn:{x:0,y:24,z:35},initialVelocity:{x:0,y:0,z:-30}});
+  let wall=false;
+  for(let i=0;i<240;i++) {
+    p.step(1/120);wall ||= !!p.wallRun;
+    assert.equal(p.perch,null,'blocked landing is not accepted');
+  }
+  assert.ok(wall);
 });
 
 test('wall-run preserves lateral flow, expires on a tall wall, and does not recharge on contact', () => {
@@ -951,7 +966,7 @@ test('ordinary release softens ascent without boosting an instant detach or floa
 test('contextual action prioritizes swing jump and only zips to a centered perch', () => {
   const p=pointZipFixture();
   assert.equal(p.contextualAction(0).label,'Zip');
-  assert.equal(p.contextualAction(Math.PI/2).label,'Jump');
+  assert.equal(p.contextualAction(Math.PI/2).label,'Speed boost');
   const target=p.pointCandidate(0);
   assert.equal(p.contextualAction(Math.PI/2,target).kind,'jump','stale off-axis marker cannot zip');
   p.grounded=true;assert.equal(p.contextualAction(0).label,'Jump');p.grounded=false;
@@ -1219,52 +1234,92 @@ test('anchor forecasts cull distant rooftop props without changing nearby collis
 });
 
 
-test('opening lesson catches after half a second and pauses on a fast rising arc before automatic release', () => {
-  const city = actualCityFixture();
-  const physics = new SwingPhysics({ ...city, spawn: { ...city.spawn, y: city.spawn.y + 55 }, initialVelocity: { x: 0, y: -18, z: -8 }, fatalGround: true });
-  const lesson = new SwingOnboarding(); lesson.reset();
-  for (let i = 0; i < 120 && !lesson.waiting; i++) {
-    physics.step(1 / 120); lesson.update(physics);
+
+
+test('rooftop objects block running and airborne impacts without wall-climb or vault recovery', () => {
+  for (const airborne of [false, true]) {
+    const p = new SwingPhysics({
+      buildings: [{x:0,z:0,width:40,depth:40,height:30,roofHeight:30.6}],
+      rooftopObstacles: [{minX:-4,maxX:4,minZ:-4,maxZ:4,minY:30.6,height:40}],
+      spawn: {x:0,y:airborne ? 36 : 32.8,z:12},
+      initialVelocity: {x:0,y:airborne ? -2 : 0,z:-25},
+    });
+    p.grounded = !airborne;
+    let hit = false;
+    for (let tick = 0; tick < 240; tick++) {
+      p.step(1/120, {forward:1});
+      hit ||= !!p.lastImpact;
+      assert.equal(p.wallRun, null);
+      assert.ok(p.vaultUntil < p.time);
+      assert.ok(p.vel.y <= 0, 'obstacle contact must not launch the horse upward');
+      assert.ok(p.pos.z >= 5.15, 'equipment still blocks the horse');
+    }
+    assert.ok(hit, 'exercise an actual obstacle impact');
+    assert.ok(Math.abs(p.pos.y - 32.8) < .01, 'horse remains on the roof');
   }
-  assert.equal(lesson.stage, 'hold');
-  assert.ok(Math.abs(physics.time - .5) < .01);
-  assert.ok(physics.vel.y < -25 && physics.vel.z < -7);
-  assert.ok(physics.attach(lesson.anchor)); lesson.press();
-  for (let i = 0; i < 600 && !lesson.waiting; i++) {
-    physics.step(1 / 120, { swingHeld: true, autoRelease: false }); lesson.update(physics);
-  }
-  assert.equal(lesson.stage, 'release');
-  assert.ok(physics.anchor, 'pause before automatic detachment');
-  assert.ok(physics.swingTelemetry().speed > 40);
-  assert.ok(physics.vel.y >= 10);
-  physics.release({ intentional: true }); lesson.release();
-  assert.equal(lesson.stage, 'done');
-  assert.equal(physics.anchor, null);
-  assert.ok(physics.soarUntil > physics.time);
-  for (let i = 0; i < 60; i++) physics.step(1 / 120);
-  assert.equal(physics.lost, false);
 });
 
-test('opening release prompt survives HUD polling and delayed input without automatic detachment', () => {
-  const city = actualCityFixture();
-  for (const pollEvery of [1, 9, 24, Infinity]) {
-    const p = new SwingPhysics({ ...city, spawn: { ...city.spawn, y: city.spawn.y + 55 }, initialVelocity: { x: 0, y: -18, z: -8 }, fatalGround: true });
-    const lesson = new SwingOnboarding(); lesson.reset();
-    for (let tick = 0; tick < 400 && !lesson.waiting; tick++) {
-      if (tick % pollEvery === 0) p.findAnchor();
-      p.step(1 / 120); lesson.update(p);
-    }
-    assert.equal(lesson.stage, 'hold');
-    // HUD work while paused must not change the candidate taught by the lesson.
-    for (let poll = 0; poll < 20; poll++) p.findAnchor();
-    assert.ok(p.attach(lesson.anchor)); lesson.press();
-    for (let tick = 0; tick < 600 && !lesson.waiting; tick++) {
-      p.step(1 / 120, { swingHeld: true, autoRelease: false }); lesson.update(p);
-    }
-    assert.equal(lesson.stage, 'release', `HUD cadence ${pollEvery}`);
-    assert.ok(p.anchor);
-    assert.ok(p.time < 4 && p.vel.y >= 10);
-    assert.ok(Math.abs(p.vel.x) < 15, 'first swing does not pull hard across the avenue');
-    assert.ok(p.swingTelemetry().speed > 35);
+
+test('held forward carries a wall climb over real rooftop parapets into walking', () => {
+  for (const n of [{x:0,z:1},{x:0,z:-1},{x:1,z:0},{x:-1,z:0}]) {
+    const parapet = n.x ? {x:n.x*20,z:0,width:.45,depth:40,minY:30.4,height:31.2} : {x:0,z:n.z*20,width:40.6,depth:.45,minY:30.4,height:31.2};
+    const p = new SwingPhysics({buildings:[{x:0,z:0,width:40,depth:40,height:30,roofHeight:30.6}],rooftopObstacles:[parapet],spawn:{x:n.x*35,y:24,z:n.z*35},initialVelocity:{x:-n.x*30,y:0,z:-n.z*30}});
+    p.yaw=Math.atan2(n.x,n.z);
+    let climbed=false;
+    for(let i=0;i<240 && !p.perch;i++) { p.step(1/120,{forward:1}); climbed ||= !!p.wallRun; }
+    assert.ok(climbed && p.perch,'perimeter lip must not prevent roof arrival');
+    assert.ok(p.grounded);
+    const arrival={...p.pos};
+    for(let i=0;i<60;i++)p.step(1/120,{forward:1});
+    assert.ok((arrival.x-p.pos.x)*n.x+(arrival.z-p.pos.z)*n.z>1,'held Up continues inward without a new press');
+    assert.ok(Math.abs(p.pos.y-32.802)<1e-8);
   }
+});
+
+
+
+
+
+test('opening teaches boost, swing, soar and selected ledge zip with flight between prompts', () => {
+ const city=actualCityFixture();
+ assert.ok(city.buildings.filter(b=>Math.abs((b.minX+b.maxX)/2-OPENING_SPAWN.x)<100&&Math.abs((b.minZ+b.maxZ)/2-OPENING_SPAWN.z)<130&&b.height>OPENING_SPAWN.y).length>=3,'start among taller buildings');
+ for(const pollEvery of [1,9,Infinity]) {
+  const p=new SwingPhysics({...city,spawn:OPENING_SPAWN,initialVelocity:{x:0,y:-18,z:-8},fatalGround:true});
+  const lesson=new SwingOnboarding();lesson.reset();
+  const runUntilPause=()=>{
+   for(let i=0;i<1500&&!lesson.waiting&&!p.lost;i++) {
+    if(i%pollEvery===0)p.findAnchor();
+    p.step(1/120,{swingHeld:lesson.stage==='swing',autoRelease:false});
+    p.viewYaw=Math.atan2(-p.vel.x,-p.vel.z);
+    lesson.update(p);
+    if(['fall','seek-zip'].includes(lesson.stage))lesson.updateContext(p,p.contextualAction(p.viewYaw));
+   }
+  };
+  runUntilPause();assert.equal(lesson.stage,'boost');assert.ok(p.time>=.7);
+  assert.ok(p.vel.y<0);assert.equal(p.contextualAction(p.viewYaw).target,undefined);
+  const boostTime=p.time;assert.ok(p.contextualJump(p.viewYaw,null));lesson.shift(true,p.time);
+  assert.equal(lesson.stage,'seek-swing');
+  runUntilPause();assert.equal(lesson.stage,'hold');assert.ok(p.time-boostTime>=.3);assert.ok(p.time-boostTime<.9,'catch promptly while boost momentum is fresh');
+  assert.ok(p.attach(lesson.anchor));lesson.press();const catchTime=p.time;
+  runUntilPause();assert.equal(lesson.stage,'release');assert.ok(p.time-catchTime>=.7);assert.ok(p.vel.y>=10);
+  p.release({intentional:true});lesson.release(p.time);const releaseTime=p.time;
+  runUntilPause();assert.equal(lesson.stage,'zip');assert.ok(p.time-releaseTime>=1.2);
+  assert.ok(lesson.target?.anchor);assert.ok(p.contextualJump(p.viewYaw,lesson.target));lesson.shift(true,p.time);
+  assert.equal(lesson.stage,'done');assert.ok(p.pointZip);assert.equal(p.lost,false);
+ }
+});
+
+test('lessons ignore unavailable actions and require successful input', () => {
+ const l=new SwingOnboarding();l.reset();
+ const p={time:.8,lost:false,grounded:false,anchor:null,wallRun:null,pointZip:null};
+ l.updateContext(p,{kind:'perch',target:{anchor:{}}});assert.equal(l.stage,'fall');
+ l.updateContext(p,{boostReady:false});assert.equal(l.waiting,false);
+ l.updateContext(p,{boostReady:true});assert.equal(l.stage,'boost');
+ l.shift(false,p.time);assert.equal(l.stage,'boost');
+ l.shift(true,p.time);assert.equal(l.stage,'seek-swing');
+ l.stage='release';l.release(3);l.updateContext({...p,time:3.5},{kind:'perch',target:{anchor:{}}});assert.equal(l.waiting,false);
+ l.updateContext({...p,time:5},{kind:'perch'});assert.equal(l.waiting,false);
+ l.updateContext({...p,time:5},{kind:'perch',target:{anchor:{}}});assert.equal(l.stage,'zip');
+ l.shift(false,5);assert.equal(l.stage,'zip');l.shift(true,5);assert.equal(l.stage,'done');
+ l.reset();assert.equal(l.target,null);
 });

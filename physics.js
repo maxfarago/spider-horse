@@ -483,7 +483,9 @@ export class SwingPhysics {
     if (this.pointZip) return {label:'Zip', kind:'wait'};
     if (this.anchor || this.grounded) return {label:'Jump', kind:'jump'};
     const target = candidate === undefined ? this.pointCandidate(yaw) : candidate && this.pointCandidate(yaw, candidate.anchor);
-    return target ? {label:'Zip', kind:'perch', target} : {label:'Jump', kind:'jump'};
+    if (target) return {label:'Zip', kind:'perch', target};
+    const boostReady = !this.lost && !this.wallRun && this.time >= this.airZipUntil && !!this.findAnchor();
+    return {label: boostReady ? 'Speed boost' : 'Jump', kind:'jump', boostReady};
   }
 
   contextualJump(yaw, candidate = undefined) {
@@ -727,6 +729,7 @@ export class SwingPhysics {
     this.vel.x *= drag;
     this.vel.z *= drag;
     this.updateWallRun();
+    if (this.perch) return;
     this.applyTether(dt, input.reel);
     this.limitSpeed();
 
@@ -777,15 +780,35 @@ export class SwingPhysics {
     const gap = normal.x ? Math.abs(this.pos.x - (normal.x < 0 ? box.minX : box.maxX)) : Math.abs(this.pos.z - (normal.z < 0 ? box.minZ : box.maxZ));
     const beside = normal.x ? this.pos.z >= box.minZ && this.pos.z <= box.maxZ : this.pos.x >= box.minX && this.pos.x <= box.maxX;
     if (this.lost || this.grounded || this.time > wall.until || gap > 2 || !beside) { this.wallRun = null; return; }
-    if (this.pos.y > box.maxY + .15) {
-      // Clearance is earned by climbing: sweep the vault normally, never teleport.
-      const into = dot(this.vel, normal);
-      const forward = clamp(wall.speed * .8, 14, 32);
-      this.vel.x -= normal.x * (into + forward);
-      this.vel.z -= normal.z * (into + forward);
-      this.vel.y = Math.max(7, Math.min(this.vel.y, 12));
+    const lip = b => b.maxY <= box.maxY + 1.2 && b.minY >= box.maxY - FOOT_CLEARANCE - .3 &&
+      (normal.x ? b.maxX-b.minX <= 2*BODY_RADIUS+.7 && Math.abs((b.minX+b.maxX)/2-(normal.x<0?box.minX+BODY_RADIUS:box.maxX-BODY_RADIUS)) < .5
+        : b.maxZ-b.minZ <= 2*BODY_RADIUS+.7 && Math.abs((b.minZ+b.maxZ)/2-(normal.z<0?box.minZ+BODY_RADIUS:box.maxZ-BODY_RADIUS)) < .5);
+    const lips = this.rooftopObstacles.filter(lip);
+    const mantleHeight = lips.length ? box.maxY - FOOT_CLEARANCE - .3 : box.maxY + .15;
+    if (this.pos.y >= mantleHeight) {
+      // Finish on the same stable rooftop footing used by a completed ledge zip.
+      const inset = 2 * BODY_RADIUS + .5;
+      const roof = { minX: box.minX + inset, maxX: box.maxX - inset, minZ: box.minZ + inset, maxZ: box.maxZ - inset };
+      if (roof.minX > roof.maxX || roof.minZ > roof.maxZ) return;
+      const landing = { x: clamp(this.pos.x, roof.minX, roof.maxX), y: box.maxY + EPSILON, z: clamp(this.pos.z, roof.minZ, roof.maxZ) };
+      // A short mantle clears the low perimeter lip before setting the hooves down.
+      // Only thin, low trim along this façade may be crossed during the lift.
+      const clearance = Math.max(this.pos.y, box.maxY + .2, ...lips.map(b => b.maxY + EPSILON));
+      const raised = { ...this.pos, y: clearance };
+      const across = { ...landing, y: clearance };
+      const occupied = (point,b) => point.x > b.minX && point.x < b.maxX && point.y > b.minY && point.y < b.maxY && point.z > b.minZ && point.z < b.maxZ;
+      const blocked = (from,to,b) => occupied(to,b) || sweepBox(from,{x:to.x-from.x,y:to.y-from.y,z:to.z-from.z},b);
+      const solids = [...this.buildings, ...this.rooftopObstacles];
+      if (solids.some(b => (!lips.includes(b) && blocked(this.pos,raised,b)) || blocked(raised,across,b) || blocked(across,landing,b))) return;
+      this.pos = landing;
+      this.perch = { ...landing, roof };
+      this.perchedAt = this.time;
+      this.yaw = Math.atan2(normal.x, normal.z);
+      this.pointLaunchDirection = { x: -normal.x, z: -normal.z };
+      this.vel = { x: 0, y: 0, z: 0 };
+      this.grounded = true;
       this.wallRun = null;
-      this.vaultUntil = this.time + .45;
+      this.vaultUntil = this.soarUntil = this.pointLaunchUntil = -Infinity;
       return;
     }
     this.vel.y = Math.max(this.vel.y, wall.climb);
@@ -802,7 +825,7 @@ export class SwingPhysics {
       let nearest = null;
       for (const collection of [this.buildings, this.rooftopObstacles]) for (const building of collection) {
         const hit = sweepBox(this.pos, delta, building);
-        if (hit && (!nearest || hit.fraction < nearest.fraction)) nearest = { ...hit, box: building };
+        if (hit && (!nearest || hit.fraction < nearest.fraction)) nearest = { ...hit, box: building, climbable: collection === this.buildings };
       }
       if (!nearest) {
         this.pos.x += delta.x;
@@ -816,7 +839,8 @@ export class SwingPhysics {
       this.pos.y += delta.y * fraction + normal.y * EPSILON;
       this.pos.z += delta.z * fraction + normal.z * EPSILON;
       this.recordImpact(normal);
-      if (recover) this.beginWallRun(nearest.box, normal);
+      // Recovery is for building façades, never rooftop equipment or parapets.
+      if (recover && nearest.climbable) this.beginWallRun(nearest.box, normal);
       const intoWall = dot(this.vel, normal);
       if (intoWall < 0) {
         this.vel.x -= normal.x * intoWall;

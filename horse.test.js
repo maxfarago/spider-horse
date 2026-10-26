@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import * as THREE from './vendor/three.module.js';
 import { GLTFLoader } from './vendor/GLTFLoader.js';
-import { createHorse } from './horse.js';
+import { createHorse, wallClimbOrientation } from './horse.js';
 
 const bytes = await readFile(new URL('./assets/warhorse.glb', import.meta.url));
 const jsonLength = bytes.readUInt32LE(12);
@@ -278,4 +278,33 @@ test('hoof reach pauses exactly and fades back to flight after release', async t
   advance(horse,1,{grounded:false,speed:30});
   assert.ok(positionOf(horse,'finger_R').y<positionOf(horse,'upperarm_R').y);
   assert.ok(snapshot(horse).every(Number.isFinite));
+});
+
+
+test('wall climbing faces upward with hooves toward every building façade', () => {
+  for (const normal of [new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1)]) {
+    const orientation = wallClimbOrientation(normal);
+    const nose = new THREE.Vector3(0, 0, -1).applyQuaternion(orientation);
+    const soles = new THREE.Vector3(0, -1, 0).applyQuaternion(orientation);
+    assert.ok(nose.distanceTo(new THREE.Vector3(0, 1, 0)) < 1e-8);
+    assert.ok(soles.distanceTo(normal.clone().negate()) < 1e-8);
+  }
+});
+
+test('vertical wall ascent runs all four legs, freezes on pause and settles on landing', async t => {
+  const horse = await horseFixture(t);
+  const climbing = { grounded: false, speed: 0, verticalSpeed: 20, wallNormal: { x: 0, y: 0, z: 1 }, feel: { wallRun: 1 } };
+  horse.group.quaternion.copy(wallClimbOrientation(climbing.wallNormal));
+  advance(horse, .5, climbing);
+  const before = feet.map(name => positionAtSaddle(horse, name));
+  advance(horse, .15, climbing);
+  feet.forEach((name, i) => assert.ok(positionAtSaddle(horse, name).distanceTo(before[i]) > .02, `${name} must run even without horizontal speed`));
+  const frozen = snapshot(horse);
+  horse.update(0, climbing);
+  assert.deepEqual(snapshot(horse), frozen);
+  horse.group.quaternion.identity();
+  advance(horse, 1, { grounded: true, perched: true, speed: 0 });
+  const landed = feet.map(name => positionOf(horse, name));
+  advance(horse, .2, { grounded: true, perched: true, speed: 0 });
+  feet.forEach((name, i) => assert.ok(positionOf(horse, name).distanceTo(landed[i]) < .001, `${name} must settle after landing`));
 });

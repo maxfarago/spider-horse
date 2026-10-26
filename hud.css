@@ -151,10 +151,64 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
 @media(max-height:500px){#minimap-wrap{width:104px;height:104px}}
 
 .onboarding-prompt {
-  position: absolute; z-index: 20; left: 50%; top: 64%;
-  transform: translateX(-50%); width: max-content; max-width: calc(100% - 40px);
-  padding: 20px 28px; border: 1px solid rgba(255,225,166,.65); border-radius: 16px;
-  background: rgba(16,23,30,.94); color: #fff4db; box-shadow: 0 12px 48px #0007;
-  font-size: clamp(18px, 2.4vw, 28px); font-weight: 600; text-align: center;
-  pointer-events: none;
+  position:absolute;z-index:20;left:50%;bottom:7%;transform:translateX(-50%);
+  width:min(430px,calc(100% - 36px));padding:24px 26px 22px;border:0;border-radius:20px;
+  background:linear-gradient(145deg,#193039f2,#10232bf5);color:#faf4e8;
+  box-shadow:0 20px 70px #0006;backdrop-filter:blur(12px);text-align:center;pointer-events:none;
+  animation:lesson-appear .2s ease-out;
 }
+.onboarding-prompt h2{font:400 clamp(28px,4vw,36px)/1.1 'Bangers',Impact,sans-serif;letter-spacing:1px;margin:0 0 18px}
+.lesson-action{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:7px;margin:0;font:500 14px/1.5 'DM Sans',sans-serif}
+.lesson-action kbd{display:inline-block;padding:8px 13px;background:#e5b89b;color:#192b30;border:0;border-radius:8px;box-shadow:0 3px 0 #ab8067;font:700 13px/1.2 'DM Sans',sans-serif;letter-spacing:.6px}
+.lesson-hint{font:12px/1.6 'DM Sans',sans-serif;color:#bdc9c9;margin:18px 0 0;text-wrap:balance}
+@keyframes lesson-appear{from{opacity:0;translate:0 6px}to{opacity:1;translate:0 0}}
+.onboarding-prompt.reduce-motion{animation:none}
+@media(prefers-reduced-motion:reduce){.onboarding-prompt{animation:none}}
+@media(max-width:760px){.onboarding-prompt{bottom:auto;top:18%;padding:20px;width:min(390px,calc(100% - 32px))}}
+@media(max-height:550px){.onboarding-prompt{bottom:16px;top:auto;padding:14px 20px}.onboarding-prompt h2{margin-bottom:10px;font-size:26px}.lesson-hint{margin-top:10px}}
+
+
+/* Freeze-frame pause treatment: softened skyline, vignette and quiet typography. */
+#pause-chip{position:absolute;inset:0;transform:none;width:100%;height:100%;z-index:30;display:grid;place-items:center;padding:24px;border:0;border-radius:0;letter-spacing:0;color:#faf4e8;background:radial-gradient(ellipse at 50% 42%,#132a344d 0%,#091820bd 100%);backdrop-filter:blur(7px) saturate(.45);-webkit-backdrop-filter:blur(7px) saturate(.45);box-shadow:inset 0 0 140px #06101766;animation:pause-reveal .22s ease-out}
+.pause-panel{width:min(480px,100%);max-height:calc(100dvh - 48px);overflow:auto;padding:0 32px 25px;background:linear-gradient(145deg,#193039ed,#10232bf5);border:0;border-radius:20px;box-shadow:0 30px 100px #0006;text-align:center;animation:pause-settle .25s ease-out}
+.pause-art{display:block;width:calc(100% + 64px);max-width:none;height:auto;aspect-ratio:1672/941;margin:0 -32px;background-image:url("./assets/horse-pause-mosaic.png");background-size:306% 306%;background-position:0% 0%;background-repeat:no-repeat}
+#pause-chip h2{font:400 clamp(32px,6vw,44px)/1.05 'Bangers',Impact,sans-serif;letter-spacing:1px;margin:24px 0 12px;color:#faf4e8}
+.pause-copy{font:13px/1.6 'DM Sans',sans-serif;color:#bdc9c9;margin:0 0 30px}
+.pause-actions{display:grid;gap:10px}#pause-chip button{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;min-height:50px;padding:12px 18px;border:1px solid #fff2;border-radius:10px;font:600 13px 'DM Sans',sans-serif;transition:background .15s,box-shadow .15s}#pause-chip #resume-button{background:#e5b89b;color:#192b30;border-color:#e5b89b}#pause-quit-button{background:#ffffff08;color:#d6dede}#pause-chip #resume-button:hover{background:#f3ceb3}#pause-quit-button:hover{background:#ffffff14}#pause-chip button:focus-visible{outline:2px solid #faf4e8;outline-offset:4px}#pause-chip kbd{font:600 9px 'DM Sans',sans-serif;letter-spacing:1px;opacity:.65;border:1px solid currentColor;border-radius:4px;padding:4px 6px}.pause-footer{font:500 8px 'DM Sans',sans-serif;letter-spacing:2px;color:#82999f;margin-top:26px}
+@keyframes pause-reveal{from{opacity:0}to{opacity:1}}@keyframes pause-settle{from{transform:translateY(8px);opacity:0}to{transform:translateY(0);opacity:1}}
+#pause-chip.reduce-motion,#pause-chip.reduce-motion *{animation:none;transition:none}
+@media(prefers-reduced-motion:reduce){#pause-chip,#pause-chip *{animation:none;transition:none}}
+@media(max-height:500px){.pause-panel{padding:0 26px 18px}.pause-art{width:calc(100% + 52px);margin:0 -26px;max-height:28dvh}.pause-copy{margin-bottom:16px}#pause-chip h2{margin-top:12px}.pause-footer{margin-top:16px}}
+
+.pause-footer a span{text-decoration:underline;text-underline-offset:3px}.pause-footer a:hover{color:#faf4e8}
+
+.onboarding-prompt.has-art{overflow:hidden}
+.lesson-art{display:block;width:112px;height:112px;object-fit:cover;margin:0 auto 18px;border-radius:14px}
+#onboarding-prompt{bottom:auto;transform-origin:top center;animation:none}
+@media(max-height:550px){.lesson-art{width:76px;height:76px;margin-bottom:12px}}
+
+#loss-dialog.menu-card{width:min(480px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;padding:0 32px 25px;border:0;border-radius:20px;background:linear-gradient(145deg,#193039,#10232b);color:#faf4e8;box-shadow:0 30px 100px #0006}
+#loss-dialog::backdrop{background:radial-gradient(ellipse at 50% 42%,#132a344d,#091820bd);backdrop-filter:blur(7px) saturate(.45)}
+.loss-art{display:block;width:calc(100% + 64px);height:auto;aspect-ratio:1672/941;background-image:url("./assets/horse-dismount-wide-mosaic.png");background-size:201% 201%;background-position:0% 0%;background-repeat:no-repeat;margin:0 -32px 26px;border-radius:0}
+
+#loss-dialog.menu-card h2{font:400 36px/1.1 'Bangers',Impact,sans-serif;letter-spacing:1px;margin:0 0 26px;color:#faf4e8}
+#loss-dialog .run-stats{gap:12px;margin:0 0 24px;padding:0;border:0;color:#bdc9c9}#loss-dialog .run-stats div+div{border:0}#loss-dialog .run-stats dd{font:500 16px/1.3 'DM Sans',sans-serif;letter-spacing:0;margin:0 0 4px}#loss-dialog .run-stats dt{font:10px 'DM Sans',sans-serif;color:#91a6ac}
+.loss-actions{display:grid;gap:10px}.loss-actions button{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:50px;padding:12px 18px;border:1px solid #fff2;border-radius:10px;background:#ffffff08;color:#d6dede;font:600 13px 'DM Sans',sans-serif}.loss-actions #loss-restart{background:#e5b89b;color:#192b30;border-color:#e5b89b}.loss-actions #loss-restart:hover{background:#f3ceb3}.loss-actions button:hover{background:#ffffff14}.loss-actions button:focus-visible{outline:2px solid #faf4e8;outline-offset:4px}.loss-actions kbd{font:600 9px 'DM Sans',sans-serif;letter-spacing:1px;opacity:.65;border:1px solid currentColor;border-radius:4px;padding:4px 6px}
+@media(max-height:550px){#loss-dialog.menu-card{padding:0 26px 18px}.loss-art{width:calc(100% + 52px);margin:0 -26px 18px}#loss-dialog.menu-card h2{font-size:30px;margin-bottom:18px}}
+
+/* Keep the boost artwork alongside its instruction, rather than above it. */
+.onboarding-prompt.has-art{display:grid;grid-template-columns:96px minmax(0,1fr);column-gap:20px;align-items:center;text-align:left}
+.onboarding-prompt.has-art .lesson-art{grid-column:1;grid-row:1 / 4;width:96px;height:96px;margin:0}
+.onboarding-prompt.has-art h2{grid-column:2;margin:0 0 12px;font-size:30px}
+.onboarding-prompt.has-art .lesson-action{grid-column:2;justify-content:flex-start;font-size:13px}
+@media(max-width:460px),(max-height:550px){.onboarding-prompt.has-art{grid-template-columns:76px minmax(0,1fr);column-gap:14px}.onboarding-prompt.has-art .lesson-art{width:76px;height:76px}.onboarding-prompt.has-art h2{font-size:26px}.onboarding-prompt.has-art .lesson-action{gap:5px;font-size:12px}}
+
+.onboarding-prompt.has-art{padding:0;grid-template-columns:112px minmax(0,1fr);column-gap:0;align-items:stretch;text-align:center}
+.onboarding-prompt.has-art .lesson-art{width:100%;height:100%;min-height:128px;object-fit:cover;border-radius:0;grid-row:1 / 3}
+.onboarding-prompt.has-art h2{align-self:end;margin:0;padding:22px 16px 12px;font-size:28px}
+.onboarding-prompt.has-art .lesson-action{align-self:start;justify-content:center;padding:0 16px 22px}
+@media(max-width:460px),(max-height:550px){.onboarding-prompt.has-art{grid-template-columns:88px minmax(0,1fr)}.onboarding-prompt.has-art .lesson-art{width:100%;height:100%;min-height:116px}.onboarding-prompt.has-art h2{padding:18px 12px 10px;font-size:25px}.onboarding-prompt.has-art .lesson-action{padding:0 12px 18px}}
+
+.onboarding-prompt.has-art.has-hint .lesson-art{grid-row:1 / 4}
+.onboarding-prompt.has-art.has-hint .lesson-action{padding-bottom:0}
+.onboarding-prompt.has-art .lesson-hint{grid-column:2;margin:0;padding:12px 16px 20px}
