@@ -345,10 +345,10 @@ function releaseSwing(intentional) {
 }
 let lossArtIndex = 0;
 const lossArtDescriptions = [
-  'A horse in sunglasses crash-landing on a city street.',
-  'A horse in sunglasses sprawled on the street at sunset.',
-  'A horse in sunglasses resting against a bent streetlamp.',
-  'A horse in sunglasses lying upside down with its hooves in the air.',
+  'A horse crash-landing beside a brick wall on a city street.',
+  'A horse sprawled on a sunlit city street.',
+  'A horse resting against a streetlamp on a rainy city night.',
+  'A horse lying upside down with its hooves in the air on a rainy city night.',
 ];
 function loseRun() {
   const art = $('loss-art');
@@ -376,7 +376,7 @@ const pauseArtDescriptions = [
   'A horse having coffee beside a rain-streaked window.',
   'A horse sitting on a bridge overlooking the sunset.',
   'A horse lounging in a sunny city park.',
-  'A horse sipping coffee beneath rooftop string lights.',
+  'A horse holding a glass of wine beneath rooftop string lights.',
   'A horse taking a snowy rooftop break.',
 ];
 let pauseArtBag = [], previousPauseArt = -1;
@@ -786,22 +786,18 @@ function positionOnboarding(dt) {
     lessonBoundsStage = onboarding.stage;
   }
   const height = shell.clientHeight;
-  let top = height, bottom = 0;
+  let top = height;
   for (let i = 0; i < 8; i++) {
     lessonCorner.set(i & 1 ? lessonHorseBounds.max.x : lessonHorseBounds.min.x,
       i & 2 ? lessonHorseBounds.max.y : lessonHorseBounds.min.y,
       i & 4 ? lessonHorseBounds.max.z : lessonHorseBounds.min.z).project(camera);
     const y = (1 - lessonCorner.y) * height / 2;
-    top = Math.min(top, y); bottom = Math.max(bottom, y);
+    top = Math.min(top, y);
   }
-  const margin = 16, gap = 20, cardHeight = prompt.offsetHeight;
-  const above = Math.max(0, top - gap - margin);
-  const below = Math.max(0, height - margin - bottom - gap);
-  const useBelow = below >= cardHeight || below > above;
-  const room = useBelow ? below : above;
+  const margin = 16, gap = 28, cardHeight = prompt.offsetHeight;
+  const room = Math.max(0, top - gap - margin);
   const scale = Math.min(1, room / Math.max(1, cardHeight));
-  const y = useBelow ? Math.max(margin, bottom + gap) : Math.max(margin, top - gap - cardHeight * scale);
-  prompt.style.top = `${y}px`;
+  prompt.style.top = `${Math.max(margin, top - gap - cardHeight * scale)}px`;
   prompt.style.transform = `translateX(-50%) scale(${scale})`;
 }
 
