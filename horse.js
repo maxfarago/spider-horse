@@ -144,7 +144,10 @@ export async function createHorse() {
   let hangingNeck = null, hangingHead = null;
   const weights = { hanging: 0, idle: 1, walk: 0, canter: 0, airborne: 0 };
   let speed = 0, flight = 0, tension = 0, extension = 0, descent = 0, ascent = 0, turn = 0, clock = 0;
-  let walkRate = 0.8, canterRate = 0.8;
+  let walkRate = 0.8, canterRate = 0.8, perchPose = 0;
+  const rearShins = ['calf_L', 'calf_R'].map(name => model.getObjectByName(name));
+  const perchBones = [...forelegs, ...lowerlegs, ...hindlegs, ...rearShins, neck, head];
+  let beforePerchPose = null;
   let bodyPitch = 0, pitchVelocity = 0, lift = 0, liftVelocity = 0, previousLoad = 0;
 
   const supportingArm = model.getObjectByName('upperarm_R');
@@ -213,12 +216,17 @@ export async function createHorse() {
     if (!(dt > 0)) return;
     dt = Math.min(dt, 0.08);
     clock += dt;
+    if (beforePerchPose) perchBones.forEach((bone, i) => bone.quaternion.copy(beforePerchPose[i]));
     for (const phase of Object.keys(phasePose)) {
       const target = state.hanging || state.grounded ? 0 : state.feel?.[phase] || 0;
       phasePose[phase] = state.hanging || state.perched ? 0 : THREE.MathUtils.damp(phasePose[phase], target, 12, dt);
     }
     const accent = state.reduceMotion ? .35 : 1;
     const climbing = !!state.wallNormal;
+    const zipping = !!state.feel?.zip;
+    const leaping = state.feel?.leap || 0;
+    const poised = leaping > 0 || zipping || (state.perched && (state.speed || 0) < .15);
+    perchPose = state.perched ? (poised ? 1 : 0) : THREE.MathUtils.damp(perchPose, poised ? 1 : 0, 20, dt);
     const gaitSpeed = climbing ? Math.hypot(state.speed || 0, state.verticalSpeed || 0) : Math.max(0, state.speed || 0);
     speed = state.perched ? gaitSpeed : THREE.MathUtils.damp(speed, gaitSpeed, climbing ? 16 : 5, dt);
     flight = state.perched ? 0 : THREE.MathUtils.damp(flight, state.grounded || climbing ? 0 : 1, climbing ? 16 : state.grounded ? 8 : 5, dt);
@@ -240,10 +248,10 @@ export async function createHorse() {
     const running = THREE.MathUtils.smoothstep(speed, 4.0, 9.0);
     // All four legs keep cycling in the air, including at the top of an arc.
     // Full authored limb motion blends into the ground gait on landing.
-    weights.airborne = flight;
-    weights.idle = (1 - flight) * (1 - moving);
-    weights.walk = (1 - flight) * moving * (1 - running);
-    weights.canter = (1 - flight) * moving * running;
+    weights.airborne = flight * (1 - perchPose);
+    weights.idle = (1 - flight) * (1 - moving) * (1 - perchPose) + perchPose;
+    weights.walk = (1 - flight) * moving * (1 - running) * (1 - perchPose);
+    weights.canter = (1 - flight) * moving * running * (1 - perchPose);
     weights.hanging = state.hanging ? 1 : 0;
     for (const [name, action] of Object.entries(actions)) action.setEffectiveWeight(state.hanging ? (name === 'hanging' ? 1 : 0) : weights[name]);
 
@@ -338,6 +346,70 @@ export async function createHorse() {
       group.updateMatrixWorld(true);
     }
     poseWebLeg(state, dt);
+    beforePerchPose = perchBones.map(bone => bone.quaternion.clone());
+    if (leaping > 0) {
+      // A deliberately ridiculous streamlined leap: every hoof trails the body.
+      // Aim in the horse's frame so steering rotates the whole silhouette.
+      for (const side of ['L', 'R']) {
+        for (const [upperName, lowerName, hoofName] of [['upperarm','forearm','finger'], ['thigh','calf','toe']]) {
+          const upper=model.getObjectByName(`${upperName}_${side}`), lower=model.getObjectByName(`${lowerName}_${side}`), hoof=model.getObjectByName(`${hoofName}_${side}`);
+          const upperBefore=upper.quaternion.clone(),lowerBefore=lower.quaternion.clone();
+          const root=group.worldToLocal(upper.getWorldPosition(new THREE.Vector3()));
+          const kneeGoal=group.localToWorld(root.clone().add(new THREE.Vector3(0,-.12,.65)));
+          const hoofGoal=group.localToWorld(root.clone().add(new THREE.Vector3(0,-.18,1.6)));
+          aimJoint(upper,lower,kneeGoal);aimJoint(lower,hoof,hoofGoal);
+          upper.quaternion.slerp(upperBefore,1-leaping);lower.quaternion.slerp(lowerBefore,1-leaping);
+        }
+      }
+      const neckBefore=neck.quaternion.clone();
+      const neckGoal=group.worldToLocal(neck.getWorldPosition(new THREE.Vector3())).add(new THREE.Vector3(0,0,-2));
+      aimJoint(neck,head,group.localToWorld(neckGoal));
+      neck.quaternion.slerp(neckBefore,1-leaping);
+    } else if (state.perched && (state.speed || 0) < .15) {
+      // Lower the body over a compact support footprint, then solve the legs
+      // back to planted hooves. The raised chest keeps the gaze over the city.
+      const legs = ['L', 'R'].flatMap(side => [
+        ['upperarm', 'forearm', 'finger', side], ['thigh', 'calf', 'toe', side],
+      ]).map(([upper, lower, hoof, side]) => ({
+        upper: model.getObjectByName(`${upper}_${side}`),
+        lower: model.getObjectByName(`${lower}_${side}`),
+        hoof: model.getObjectByName(`${hoof}_${side}`),
+        rear: upper === 'thigh',
+      }));
+      const goals = legs.map(leg => {
+        const point = group.worldToLocal(leg.hoof.getWorldPosition(new THREE.Vector3()));
+        point.x *= .9;
+        point.z *= leg.rear ? .32 : .85;
+        return group.localToWorld(point);
+      });
+      suspension.position.y -= .55;
+      suspension.rotation.x = .18;
+      group.updateMatrixWorld(true);
+      legs.forEach((leg, i) => {
+        const root = leg.upper.getWorldPosition(new THREE.Vector3());
+        const knee = leg.lower.getWorldPosition(new THREE.Vector3());
+        const foot = leg.hoof.getWorldPosition(new THREE.Vector3());
+        const upperLength = root.distanceTo(knee), lowerLength = knee.distanceTo(foot);
+        const direction = goals[i].clone().sub(root);
+        const distance = Math.min(direction.length(), (upperLength + lowerLength) * .995);
+        direction.normalize();
+        const bend = knee.clone().sub(root);
+        bend.addScaledVector(direction, -bend.dot(direction)).normalize();
+        const along = (upperLength ** 2 + distance ** 2 - lowerLength ** 2) / (2 * distance);
+        const kneeGoal = root.clone().addScaledVector(direction, along)
+          .addScaledVector(bend, Math.sqrt(Math.max(0, upperLength ** 2 - along ** 2)));
+        aimJoint(leg.upper, leg.lower, kneeGoal);
+        aimJoint(leg.lower, leg.hoof, goals[i]);
+      });
+      neck.quaternion.multiply(offset.setFromAxisAngle(axisX, -.18));
+    } else {
+      const crouch = perchPose * .65;
+      for (const bone of forelegs) bone.quaternion.multiply(offset.setFromAxisAngle(axisX, crouch));
+      for (const bone of lowerlegs) bone.quaternion.multiply(offset.setFromAxisAngle(axisX, -crouch * 1.4));
+      for (const bone of hindlegs) bone.quaternion.multiply(offset.setFromAxisAngle(axisX, -crouch * .7));
+      neck.quaternion.multiply(offset.setFromAxisAngle(axisX, -.1 * perchPose));
+    }
+    group.updateMatrixWorld(true);
     for (const mesh of meshes) if (mesh.isSkinnedMesh) mesh.skeleton.update();
   }
 

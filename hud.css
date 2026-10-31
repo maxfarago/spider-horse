@@ -159,7 +159,7 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
 }
 .onboarding-prompt h2{font:400 clamp(28px,4vw,36px)/1.1 'Bangers',Impact,sans-serif;letter-spacing:1px;margin:0 0 18px}
 .lesson-action{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:7px;margin:0;font:500 14px/1.5 'DM Sans',sans-serif}
-.lesson-action kbd{display:inline-block;padding:8px 13px;background:var(--accent);color:var(--accent-ink);border:0;border-radius:8px;box-shadow:0 3px 0 var(--accent-deep);font:700 13px/1.2 'DM Sans',sans-serif;letter-spacing:.6px}
+.lesson-action kbd,.lesson-movement kbd,.onboarding-prompt.completion .lesson-control-row>kbd{display:inline-block;padding:8px 13px;background:var(--accent);color:var(--accent-ink);border:0;border-radius:8px;box-shadow:0 3px 0 var(--accent-deep);font:700 13px/1.2 'DM Sans',sans-serif;letter-spacing:.6px}
 .lesson-hint{font:12px/1.6 'DM Sans',sans-serif;color:#bdc9c9;margin:18px 0 0;text-wrap:balance}
 @keyframes lesson-appear{from{opacity:0;translate:0 6px}to{opacity:1;translate:0 0}}
 .onboarding-prompt.reduce-motion{animation:none}
@@ -172,13 +172,13 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
 #pause-chip{position:absolute;inset:0;transform:none;width:100%;height:100%;z-index:30;display:grid;place-items:center;padding:24px;border:0;border-radius:0;letter-spacing:0;color:#faf4e8;background:radial-gradient(ellipse at 50% 42%,#132a344d 0%,#091820bd 100%);backdrop-filter:blur(7px) saturate(.45);-webkit-backdrop-filter:blur(7px) saturate(.45);box-shadow:inset 0 0 140px #06101766;animation:pause-reveal .22s ease-out}
 .pause-panel{width:min(480px,100%);max-height:calc(100dvh - 48px);overflow:auto;padding:0 32px 25px;background:linear-gradient(145deg,#193039ed,#10232bf5);border:0;border-radius:20px;box-shadow:0 30px 100px #0006;text-align:center;animation:pause-settle .25s ease-out}
 .pause-art{display:block;width:calc(100% + 64px);max-width:none;height:auto;aspect-ratio:1672/941;margin:0 -32px;background-image:url("./assets/horse-pause-mosaic.png");background-size:306% 306%;background-position:0% 0%;background-repeat:no-repeat}
-#pause-chip h2{font:400 clamp(32px,6vw,44px)/1.05 'Bangers',Impact,sans-serif;letter-spacing:1px;margin:24px 0 12px;color:#faf4e8}
-.pause-copy{font:13px/1.6 'DM Sans',sans-serif;color:#bdc9c9;margin:0 0 30px}
+#pause-chip h2{font:400 clamp(32px,6vw,44px)/1.05 'Bangers',Impact,sans-serif;letter-spacing:1px;margin:24px 0 12px;color:var(--accent)}
+
 .pause-actions{display:grid;gap:10px}#pause-chip button{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;min-height:50px;padding:12px 18px;border:1px solid #fff2;border-radius:10px;font:600 13px 'DM Sans',sans-serif;transition:background .15s,box-shadow .15s}#pause-chip #resume-button{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}#pause-quit-button{background:#ffffff08;color:#d6dede}#pause-chip #resume-button:hover{background:var(--accent-hover)}#pause-quit-button:hover{background:#ffffff14}#pause-chip button:focus-visible{outline:2px solid #faf4e8;outline-offset:4px}#pause-chip kbd{font:600 9px 'DM Sans',sans-serif;letter-spacing:1px;opacity:.65;border:1px solid currentColor;border-radius:4px;padding:4px 6px}.pause-footer{font:500 8px 'DM Sans',sans-serif;letter-spacing:2px;color:#82999f;margin-top:26px}
 @keyframes pause-reveal{from{opacity:0}to{opacity:1}}@keyframes pause-settle{from{transform:translateY(8px);opacity:0}to{transform:translateY(0);opacity:1}}
 #pause-chip.reduce-motion,#pause-chip.reduce-motion *{animation:none;transition:none}
 @media(prefers-reduced-motion:reduce){#pause-chip,#pause-chip *{animation:none;transition:none}}
-@media(max-height:500px){.pause-panel{padding:0 26px 18px}.pause-art{width:calc(100% + 52px);margin:0 -26px;max-height:28dvh}.pause-copy{margin-bottom:16px}#pause-chip h2{margin-top:12px}.pause-footer{margin-top:16px}}
+@media(max-height:500px){.pause-panel{padding:0 26px 18px}.pause-art{width:calc(100% + 52px);margin:0 -26px;max-height:28dvh}#pause-chip h2{margin-top:12px}.pause-footer{margin-top:16px}}
 
 .pause-footer a span{text-decoration:underline;text-underline-offset:3px}.pause-footer a:hover{color:#faf4e8}
 
@@ -303,4 +303,84 @@ dialog{border:1px solid #fff9;border-radius:28px;background:var(--paper)}dialog:
 @media(max-width:760px),(pointer:coarse){
  .lesson-control[data-action="nos"]{width:34px;height:18px;border:0;border-radius:0;background:none;box-shadow:none}
  .lesson-control[data-action="nos"] .nos-mark{width:34px;height:16px}
+}
+
+.onboarding-prompt.completion{pointer-events:auto}
+.onboarding-prompt.completion #lesson-key,.onboarding-prompt.completion #lesson-control{display:none}
+#lesson-continue{margin:20px auto 0;justify-content:center}
+
+.lesson-movement{display:inline-grid;grid-template-columns:repeat(3,22px);gap:3px;vertical-align:middle;margin:0 5px}
+.lesson-movement kbd{display:grid;place-items:center;min-width:22px;height:22px;padding:0}
+.lesson-movement kbd:first-child{grid-column:2}
+.lesson-movement kbd:nth-child(2){grid-column:1}
+.lesson-joystick{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border:1px solid #faf4e866;border-radius:50%;background:#142b3570;box-shadow:inset 0 0 0 6px #faf4e810}
+.lesson-joystick i{width:19px;height:19px;border:1px solid #faf4e88c;border-radius:50%;background:#faf4e8db;box-shadow:0 2px 5px #0004}
+.onboarding-prompt.completion .lesson-control-row>kbd{white-space:nowrap}
+
+.onboarding-prompt.turn-lesson .lesson-control{display:inline-flex;width:auto;height:auto;gap:7px;align-items:center;background:none;border:0;padding:0}
+.lesson-turn-direction{grid-template-columns:28px}
+.lesson-turn-direction kbd:first-child{grid-column:1;width:28px;height:28px}
+.onboarding-prompt.turn-lesson .lesson-joystick{flex-shrink:0}
+
+/* Room for both pause actions on desktop; retain full-width touch targets. */
+@media(min-width:761px) and (pointer:fine){
+ .pause-panel{width:min(600px,100%)}
+ .pause-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
+ #pause-chip .pause-actions button{white-space:nowrap}
+}
+
+.onboarding-prompt.completion h2{margin-bottom:6px}
+.onboarding-prompt.completion .lesson-action{gap:0}
+#lesson-continue{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;min-height:50px;margin:20px 0 0;padding:12px 18px;border:1px solid var(--accent);border-radius:10px;background:var(--accent);color:var(--accent-ink);font:600 13px 'DM Sans',sans-serif;transition:background .15s,box-shadow .15s}
+#lesson-continue:hover{background:var(--accent-hover)}
+#lesson-continue:focus-visible{outline:2px solid #faf4e8;outline-offset:4px}
+#lesson-continue kbd{font:600 9px 'DM Sans',sans-serif;letter-spacing:1px;opacity:.65;border:1px solid currentColor;border-radius:4px;padding:4px 6px}
+@media(max-width:760px),(pointer:coarse){#lesson-continue kbd{display:none}}
+
+.onboarding-prompt.completion{padding:28px 30px}
+.onboarding-prompt.completion .lesson-hint{display:grid;gap:22px;margin:28px 0 30px;text-align:left;text-wrap:initial}
+.lesson-control-row{display:grid;grid-template-columns:88px minmax(0,1fr);gap:18px;align-items:center;line-height:1.5}
+.lesson-control-row>.lesson-movement{justify-self:center;margin:0}
+.lesson-control-row>kbd{justify-self:center}
+.onboarding-prompt.completion #lesson-continue{margin-top:0}
+@media(max-width:760px){
+ .onboarding-prompt.completion{padding:24px}
+ .lesson-control-row{grid-template-columns:72px minmax(0,1fr);gap:14px}
+}
+@media(max-height:550px){
+ .onboarding-prompt.completion{padding:16px 24px}
+ .onboarding-prompt.completion .lesson-hint{margin:18px 0 22px;gap:14px}
+}
+
+/* Shared CTA palette and modal keycaps. */
+.primary-button,.intro-actions .primary-button,.menu-card .primary-button,
+#pause-chip #resume-button,.loss-actions #loss-restart,#lesson-continue,#error-screen button{
+ background:#fff;color:var(--accent-deep);border-color:#fff;
+}
+.primary-button:hover,.intro-actions .primary-button:hover,.menu-card .primary-button:hover,
+#pause-chip #resume-button:hover,.loss-actions #loss-restart:hover,#lesson-continue:hover,#error-screen button:hover{
+ background:var(--accent);color:var(--accent-deep);border-color:var(--accent);
+}
+.secondary-button,#pause-chip #pause-quit-button,.loss-actions #loss-switch{
+ color:var(--accent);
+}
+/* Keep the pause screen's compact outlined treatment for every modal key. */
+#pause-chip kbd,dialog kbd,#onboarding-prompt kbd,
+#onboarding-prompt .lesson-movement kbd,#onboarding-prompt .lesson-control-row>kbd{
+ font:600 9px/1.4 'DM Sans',sans-serif;letter-spacing:1px;
+ padding:4px 6px;border:1px solid currentColor;border-radius:4px;
+ background:transparent;box-shadow:none;color:var(--accent);opacity:1;
+}
+#pause-chip #resume-button kbd,.loss-actions #loss-restart kbd,
+#lesson-continue kbd,.primary-button kbd{color:var(--accent-deep)}
+#pause-chip #pause-quit-button kbd,.loss-actions #loss-switch kbd,.secondary-button kbd{color:var(--accent)}
+dialog:not(.menu-card) kbd{color:var(--accent-deep)}
+.onboarding-prompt.completion .lesson-hint{justify-items:center;text-align:center}
+.onboarding-prompt.completion .lesson-control-row{
+ width:max-content;max-width:100%;grid-template-columns:88px minmax(0,1fr);justify-content:center;
+}
+.onboarding-prompt.completion .lesson-control-row>span:last-child{width:175px;max-width:100%;text-align:center}
+@media(max-width:760px){
+ .onboarding-prompt.completion .lesson-control-row{grid-template-columns:64px minmax(0,1fr);gap:12px}
+ .onboarding-prompt.completion .lesson-control-row>span:last-child{width:155px}
 }

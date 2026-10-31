@@ -441,7 +441,10 @@ export function createCity(scene) {
       roofCube(darkMetal, fx, h + 2.21, z - d * .25, w * .3, .14, d * .26);
     }
     if (old && w > 14 && random() > .44) {
-      const tx = x - w * .24, tz = z + d * .22, th = h + 4;
+      // Keep the final onboarding landing and its south-facing goal view clear.
+      // Screen-left from that view is +X: put this tank on the opposite side.
+      const onboardingLandingRoof = Math.abs(x - 47.4) < .01 && Math.abs(z + 684) < .01;
+      const tx = x + w * (onboardingLandingRoof ? .30 : -.24), tz = z + d * .22, th = h + 4;
       rooftopObstacles.push({minX:tx-2.15,maxX:tx+2.15,minZ:tz-2.15,maxZ:tz+2.15,minY:h,height:th+5.4});
       for (const dx of [-1.3, 1.3]) for (const dz of [-1.3, 1.3]) pole(darkMetal, [tx + dx, h, tz + dz], [tx + dx * .8, th, tz + dz * .8], .1);
       add(cylinder, redBrick, [tx, th + 2, tz], [1.85, 4, 1.85]);

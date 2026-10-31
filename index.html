@@ -20,7 +20,6 @@
 
       <h1 id="intro-title">SPIDER-HORSE</h1>
       <div class="intro-actions"><button class="primary-button" data-mode="express">Pony Express</button><button class="primary-button intro-roam" data-mode="roam">Free Roam</button></div>
-      <p class="intro-copy"><kbd>SPACE</kbd> to swing <span aria-hidden="true">•</span> <kbd>← →</kbd> to steer <span aria-hidden="true">•</span> <kbd>SHIFT</kbd> to Jump / NOS / Zip</p>
     </section>
 
     <div id="live-indicator" class="live-indicator hidden"><span class="pulse-dot"></span><span id="flight-state">FREE FALL</span><span class="flight-sep">/</span><span id="district">MIDTOWN</span></div>
@@ -46,13 +45,13 @@
       <img id="lesson-art" class="lesson-art hidden" src="./assets/horse-speed-boost-square.png" width="1254" height="1254" alt="A horse in sunglasses speeding above the city at sunset." />
       <h2 id="lesson-title"></h2>
       <p class="lesson-action"><span id="lesson-verb"></span> <kbd id="lesson-key"></kbd><span id="lesson-control" class="lesson-control" role="img"></span> <span id="lesson-action"></span></p>
-      <p id="lesson-hint" class="lesson-hint"></p>
+      <div id="lesson-hint" class="lesson-hint"></div>
+      <button id="lesson-continue" class="hidden">Let’s go! <kbd>SPACE</kbd></button>
     </div>
     <div id="pause-chip" class="hidden" role="dialog" aria-modal="true" aria-labelledby="pause-title">
       <div class="pause-panel">
         <div id="pause-art" class="pause-art" role="img" aria-label="A horse taking a rooftop coffee break at sunset."></div>
-        <h2 id="pause-title">Out to pasture</h2>
-        <p class="pause-copy">You can't go web-slinging with a dead horse.</p>
+        <h2 id="pause-title">Pasture Pause</h2>
         <div class="pause-actions">
           <button id="resume-button">Back in the saddle <kbd>SPACE</kbd></button>
           <button id="pause-quit-button">Return to title <kbd>ESC</kbd></button>

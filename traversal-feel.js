@@ -13,9 +13,10 @@ export function traversalFeel(physics, reduceMotion = false) {
   const zip = physics.pointZip ? 1 : 0;
   const arrival = physics.perch ? Math.max(0, 1 - (physics.time - physics.perchedAt) / .24) : 0;
   const phase = physics.perch ? 'perched' : physics.pointZip ? 'point-zip' : wallRun ? 'wall-run' : vault > 0 ? 'vault' : !active ? 'grounded' : catchWeight > 0 ? 'catch' : attached ? 'swing' : release > 0 ? 'release' : soar > 0 ? 'soar' : 'air';
+  const leap = active && !attached && !physics.pointZip && !physics.wallRun ? Math.max(0, Math.min(1, (.9 - (physics.time - (physics.leapedAt ?? -Infinity))) / .25)) : 0;
   const motion = reduceMotion ? 0 : 1;
   return {
-    phase, catch: catchWeight, swing, release, soar, wallRun, vault, zip, arrival,
+    phase, leap, catch: catchWeight, swing, release, soar, wallRun, vault, zip, arrival,
     distance: motion * (-.8 * catchWeight + 1.8 * release + .8 * soar + 1.2 * zip - .6 * arrival),
     height: motion * (-.35 * catchWeight + .35 * swing + .5 * soar),
     fov: motion * (-2 * catchWeight + 5 * release + 2 * soar + 4 * zip - 2 * arrival),
