@@ -2,6 +2,7 @@ import * as THREE from './vendor/three.module.js';
 import { createCity } from './city.js';
 import { createHorse, wallClimbOrientation } from './horse.js';
 import { createWeb } from './web.js';
+import { createBoostSparks } from './boost-sparks.js';
 import { updateWebTarget } from './web-target.js';
 import { cameraClearance, revealAnchor, turnTowardAnchor, flightCameraFrame } from './anchor-camera.js';
 import { bindHold, bindJoystick, bindLook, travelIntent, panView } from './controls.js';
@@ -43,7 +44,9 @@ const horsePosition = new THREE.Vector3(), projected = new THREE.Vector3(), teth
 const flightRotation = new THREE.Euler(0, 0, 0, 'XYZ');
 const climbRotation = new THREE.Quaternion(), climbNormal = new THREE.Vector3();
 let climbBlend = 0;
+let turnViewCheckpoint = null;
 const ropePoints = new Float32Array(33 * 3);
+let boostSparks;
 let rope, streaks, deliveryMarker, pickupPackage, carriedPackage;
 
 function toast(message, duration = 3000) {
@@ -54,7 +57,7 @@ function toast(message, duration = 3000) {
 }
 function savePreferences() { try { localStorage.setItem('skystride.preferences', JSON.stringify(preferences)); } catch { /* Optional persistence. */ } }
 function anyDialog() { return document.querySelector('dialog[open]') !== null; }
-function clearInput() { displayedAnchor = null; keys.clear(); inputCleanups.forEach(clear => clear()); touchKeys.clear(); if (!['swing', 'release'].includes(onboarding.stage)) physics?.release(); if (physics) physics.pointZip = null; autoAttachTime = 0; }
+function clearInput() { displayedAnchor = null; keys.clear(); inputCleanups.forEach(clear => clear()); touchKeys.clear(); if (!['swing', 'release', 'turning', 'goal-release'].includes(onboarding.stage)) physics?.release(); if (physics) physics.pointZip = null; autoAttachTime = 0; }
 function openDialog(id) { clearInput(); $(id).showModal(); }
 function createSky() {
   skyMaterial = new THREE.ShaderMaterial({
@@ -180,15 +183,20 @@ function makeDelivery() {
     fragmentShader: `uniform float time; uniform float motion; varying vec2 vUv; varying vec3 vNormal; varying vec3 vView;
       void main(){
         float edge=pow(max(dot(normalize(vNormal),normalize(vView)),0.),1.6);
-        float heightFade=pow(1.-vUv.y,1.8)*(1.-smoothstep(.65,1.,vUv.y));
+        // Interpolation can overshoot the top UV slightly. A negative base
+        // with a fractional exponent produces NaNs that contaminate bloom.
+        float height=clamp(vUv.y,0.,1.);
+        float heightFade=pow(max(0.,1.-height),1.8)*(1.-smoothstep(.65,1.,height));
         float phase=fract(vUv.y*4.-time*.22*motion);
         // Three slim bright rings per group, over an uninterrupted faint beam.
         float distanceToBand=min(abs(phase-.14),min(abs(phase-.205),abs(phase-.27)));
         float feather=max(fwidth(phase),.002);
         float bands=1.-smoothstep(.007,.007+feather,distanceToBand);
-        float topFade=1.-smoothstep(.70,1.,vUv.y);
+        float topFade=1.-smoothstep(.70,1.,height);
         float opacity=mix(.12*heightFade,topFade,bands);
-        gl_FragColor=vec4(vec3(1.),edge*opacity);
+        float alpha=edge*opacity;
+        if(alpha<.0001)discard;
+        gl_FragColor=vec4(vec3(1.),alpha);
 
       }`,
   });
@@ -217,6 +225,8 @@ function updateDelivery() {
   carriedPackage.visible = active && delivery.phase === 'carrying';
 }
 function makeEffects() {
+  boostSparks = createBoostSparks(['finger_L','finger_R','toe_L','toe_R'].map(name => horse.group.getObjectByName(name)));
+  scene.add(boostSparks.group);
   rope = createWeb(); scene.add(rope.group);
   const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
   streaks = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: '#ecf2d4', transparent: true, opacity: 0, depthWrite: false }));
@@ -279,6 +289,8 @@ function launch(nextMode = mode) {
   horse.group.rotation.set(0, 0, 0, 'XYZ');
   flightRotation.set(0, 0, 0); climbBlend = 0;
   physics.reset(); lastImpact = -1; lastReset = physics.resetCount; elapsed = 0; delivery.phase = 'pickup'; running = mode === 'express';
+  boostSparks.reset();
+  turnViewCheckpoint = null;
   onboarding.reset();
   updateOnboarding();
   cameraTrackedHorse.set(physics.pos.x, physics.pos.y, physics.pos.z);
@@ -294,16 +306,22 @@ function updateOnboarding() {
   const prompt = $('onboarding-prompt');
   prompt.classList.toggle('hidden', !onboarding.waiting);
   const swing = webControlLabel() === 'Swing' ? 'the web button' : 'SPACE';
-  const shift = webControlLabel() === 'Swing' ? (onboarding.stage === 'zip' ? 'ZIP' : 'NOS') : 'SHIFT';
+  const shift = webControlLabel() === 'Swing' ? (onboarding.stage === 'zip' ? 'ZIP' : onboarding.stage === 'leap' ? 'LAUNCH' : 'NOS') : 'SHIFT';
   prompt.classList.toggle('reduce-motion', preferences.reduceMotion);
   const lesson = {
+    complete: ['Good job!', '', '', 'Now head to the Foal Goal.', webControlLabel() === 'Swing' ? 'Use the joystick to move around on rooftops and the Jump button to jump off.' : 'Use the arrow keys to move around on rooftops and SHIFT to jump off.'],
     boost: ['A little horse power', 'hit', shift, 'for speed boost', ''],
     hold: ['Grab some sky', 'hold', swing, 'to start swinging', 'Keep holding to swing'],
     release: ['Let it fly', 'release', swing, 'to soar', ''],
+    'goal-release': ['Follow the light', 'release', swing, mode === 'express' ? 'to soar toward the goal' : 'to soar out of the turn', ''],
     zip: ['Hoof to roof', 'hit', shift, 'to snap to ledge', ''],
+    leap: ['Take a leap', 'hit', shift, 'to leap off the building', ''],
+    turn: ['Swing into the turn', 'hold', 'SPACE', `to swing ${onboarding.direction > 0 ? 'left' : 'right'}`, mode === 'express' ? 'Hold that direction while swinging toward the searchlight.' : 'Hold a direction while swinging to steer through the city.'],
   }[onboarding.stage];
   const artwork = {
+    leap: ['horse-leap-lesson.png', 'A horse leaping off a stone ledge above the city at sunset.'],
     boost: ['horse-speed-boost-square.png', 'A horse in sunglasses speeding above the city at sunset.'],
+    'goal-release': ['horse-soar-lesson.png', 'A horse soaring toward the city skyline.'],
     release: ['horse-soar-lesson.png', 'A horse releasing its web and soaring above the city at sunset.'],
     zip: ['horse-zip-lesson.png', 'A horse pulling itself toward a rooftop ledge on a web.'],
     hold: ['horse-swing-lesson.png', 'A horse swinging between buildings from a web attached to its front hoof.'],
@@ -314,29 +332,85 @@ function updateOnboarding() {
     $('lesson-art').alt = artwork[1];
   }
   prompt.classList.toggle('has-art', !!artwork);
-  prompt.classList.toggle('has-hint', onboarding.stage === 'hold');
-  $('lesson-hint').classList.toggle('hidden', onboarding.stage !== 'hold');
+  prompt.classList.toggle('completion', onboarding.stage === 'complete');
+  prompt.classList.toggle('turn-lesson', onboarding.stage === 'turn');
+  $('lesson-continue').classList.toggle('hidden', onboarding.stage !== 'complete');
+  prompt.classList.toggle('has-hint', ['hold', 'turn', 'complete'].includes(onboarding.stage));
+  $('lesson-hint').classList.toggle('hidden', !['hold', 'turn', 'complete'].includes(onboarding.stage));
   if (lesson) {
     ['lesson-title', 'lesson-verb', 'lesson-key', 'lesson-action', 'lesson-hint'].forEach((id, i) => { $(id).textContent = lesson[i]; });
+    if (onboarding.stage === 'complete') {
+      const hint = $('lesson-hint');
+      const movement = document.createElement('span');
+      movement.className = 'lesson-movement';
+      if (webControlLabel() === 'Swing') {
+        movement.setAttribute('role', 'img'); movement.setAttribute('aria-label', 'joystick');
+        movement.classList.add('lesson-joystick');
+        const thumb = document.createElement('i'); movement.append(thumb);
+      } else {
+        movement.setAttribute('role', 'img'); movement.setAttribute('aria-label', 'arrow keys');
+        for (const arrow of ['↑', '←', '↓', '→']) {
+          const key = document.createElement('kbd'); key.textContent = arrow; movement.append(key);
+        }
+      }
+      const jump = document.createElement('kbd'); jump.textContent = webControlLabel() === 'Swing' ? 'Jump' : 'SHIFT';
+      const moveRow = document.createElement('div'); moveRow.className = 'lesson-control-row';
+      const moveLabel = document.createElement('span'); moveLabel.textContent = 'Move around rooftops';
+      moveRow.append(movement, moveLabel);
+      const jumpRow = document.createElement('div'); jumpRow.className = 'lesson-control-row';
+      const jumpLabel = document.createElement('span'); jumpLabel.textContent = 'Jump off the rooftop';
+      jumpRow.append(jump, jumpLabel);
+      hint.replaceChildren(moveRow, jumpRow);
+    }
     // Reuse the live controls' artwork without their input handlers or button semantics.
     const control = $('lesson-control');
-    const kind = ['hold', 'release'].includes(onboarding.stage) ? 'swing' : onboarding.stage === 'zip' ? 'zip' : 'nos';
+    const kind = ['hold', 'release', 'goal-release', 'turn'].includes(onboarding.stage) ? 'swing' : onboarding.stage === 'zip' ? 'zip' : 'nos';
     control.dataset.action = kind;
     control.setAttribute('aria-label', kind === 'swing' ? 'web button' : `${kind.toUpperCase()} button`);
     const artwork = kind === 'swing' ? $('shoot-web').querySelector('svg') : $('jump-action').querySelector(kind === 'zip' ? '.zip-label' : '.nos-mark');
     control.replaceChildren(artwork.cloneNode(true));
+    if (onboarding.stage === 'turn') {
+      const left = onboarding.direction > 0;
+      const movement = document.createElement('span');
+      movement.className = 'lesson-movement lesson-turn-direction';
+      if (webControlLabel() === 'Swing') {
+        movement.classList.add('lesson-joystick');
+        const thumb = document.createElement('i');
+        thumb.style.transform = `translateX(${left ? -9 : 9}px)`;
+        movement.append(thumb);
+      } else {
+        control.replaceChildren();
+        const key = document.createElement('kbd'); key.textContent = left ? '←' : '→'; movement.append(key);
+      }
+      control.append(document.createTextNode('+'), movement);
+      control.setAttribute('aria-label', webControlLabel() === 'Swing' ? `Swing button and joystick held ${left ? 'left' : 'right'}` : `${left ? 'Left' : 'Right'} arrow key`);
+    }
+    if (onboarding.stage === 'leap') { control.textContent = 'LAUNCH'; control.setAttribute('aria-label', 'Launch button'); }
   }
 }
 function onboardingPress() {
-  if (onboarding.stage !== 'hold') return false;
+  if (!['hold', 'turn'].includes(onboarding.stage)) return false;
+  if (onboarding.stage === 'turn' && (!held('Space') || currentSteer() * onboarding.direction <= .25)) return false;
   if (!physics.attach(onboarding.anchor)) return false;
   onboarding.press(); updateOnboarding(); soundEffect('web'); lastAttachmentCount = physics.attachmentCount || 0;
   return true;
 }
 function releaseSwing(intentional) {
+  if (onboarding.stage === 'turning' && !intentional) return;
   if (onboarding.stage === 'fall' || onboarding.stage === 'hold') return;
+  if (intentional && onboarding.retryTurn(physics)) {
+    clearInput(); boostSparks.reset(); accumulator = 0;
+    if (turnViewCheckpoint) {
+      viewYaw = turnViewCheckpoint.yaw; orbit = turnViewCheckpoint.orbit; pitch = turnViewCheckpoint.pitch;
+      camera.position.copy(turnViewCheckpoint.position); cameraTarget.copy(turnViewCheckpoint.target);
+      cameraTrackedHorse.copy(turnViewCheckpoint.tracked); elapsed = turnViewCheckpoint.elapsed;
+    }
+    lastAttachmentCount = physics.attachmentCount; lastImpact = physics.lastImpact?.time ?? -1;
+    updateHorse(1/120, {turn:0,forward:0}); updateOnboarding();
+    return;
+  }
   if (onboarding.stage === 'swing' && intentional) { launch(mode); return; }
-  if (onboarding.stage === 'release') {
+  if (['release', 'goal-release'].includes(onboarding.stage)) {
     if (!intentional) return;
     onboarding.release(physics.time); updateOnboarding();
   }
@@ -394,11 +468,20 @@ function nextPauseArt() {
   }
   previousPauseArt = pauseArtBag.pop();
   const art = $('pause-art');
-  art.style.backgroundPosition = `${previousPauseArt % 3 * 50}% ${Math.floor(previousPauseArt / 3) * 50}%`;
+  // The source collage has uneven rows (314, 294, 333 px), not a uniform grid.
+  // Inset each cell to exclude its separator and neighboring artwork.
+  const columns = [[3, 554], [560, 1111], [1117, 1669]];
+  const rows = [[3, 310], [317, 604], [612, 938]];
+  const [left, right] = columns[previousPauseArt % 3];
+  const [top, bottom] = rows[Math.floor(previousPauseArt / 3)];
+  const width = right - left, height = bottom - top;
+  art.style.backgroundSize = `${1672 / width * 100}% ${941 / height * 100}%`;
+  art.style.backgroundPosition = `${left / (1672 - width) * 100}% ${top / (941 - height) * 100}%`;
   art.setAttribute('aria-label', pauseArtDescriptions[previousPauseArt]);
 }
 function setPaused(value) { if (value && !paused) nextPauseArt(); paused = value; clearInput(); $('pause-chip').classList.toggle('hidden', !paused); $('pause-chip').classList.toggle('reduce-motion', preferences.reduceMotion); if (paused) $('resume-button').focus(); else canvas.focus(); }
 function quitToTitle() {
+  boostSparks.reset();
   onboarding.stage = 'done'; updateOnboarding();
   clearInput(); started = false; paused = false; running = false;
   physics.reset(); updateDelivery();
@@ -414,13 +497,18 @@ function startPivotReveal() {
   previewStartOffset.copy(camera.position).sub(horsePosition);
   previewLookOffset.copy(cameraTarget).sub(horsePosition);
 }
-function currentSteer() { return THREE.MathUtils.clamp(Number(held('ArrowLeft') || held('KeyA')) - Number(held('ArrowRight') || held('KeyD')) - joystickSteering, -1, 1); }
+function currentSteer() { if (onboarding.steeringLocked) return 0; return THREE.MathUtils.clamp(Number(held('ArrowLeft') || held('KeyA')) - Number(held('ArrowRight') || held('KeyD')) - joystickSteering, -1, 1); }
 function jumpAction() {
-  if (!started || paused || (!onboarding.freeControl && !['boost', 'zip'].includes(onboarding.stage)) || anyDialog() || physics.lost) return;
+  if (!started || paused || (!onboarding.freeControl && !['boost', 'zip', 'leap'].includes(onboarding.stage)) || anyDialog() || physics.lost) return;
   physics.viewYaw = travelIntent(physics.vel, physics.yaw, currentSteer());
   const previousBoost = physics.airZipUntil;
   const jumped = physics.contextualJump(travelIntent(physics.vel, physics.yaw, 0), onboarding.stage === 'zip' ? onboarding.target : onboarding.stage === 'boost' ? null : pointTarget); autoAttachTime = 0;
   onboarding.shift(jumped, physics.time); updateOnboarding();
+  if (jumped && physics.pointZip) {
+    // Clear look offsets so the approach reads clearly before the final perch reveal.
+    orbit = 0; pitch = .1; frameSelectedAnchor = false; facingAnchor = null;
+  }
+  if (jumped && physics.airZipUntil > previousBoost) boostSparks.trigger();
   if (jumped) soundEffect(physics.pointZip ? 'zip' : physics.airZipUntil > previousBoost ? 'boost' : 'jump');
 }
 function attachLedge(candidate) {
@@ -434,6 +522,7 @@ function beginSwing() {
   if (attachLedge(undefined)) { autoAttachTime = 0; } else { autoAttachTime = 1.4; toast(physics.grounded ? 'No rooftop in reach. Jump with SHIFT and hold SPACE.' : 'Keep holding — waiting for a reachable ledge.', 1700); }
 }
 function setupEvents() {
+  $('lesson-continue').onclick = () => { onboarding.finish(); clearInput(); updateOnboarding(); canvas.focus(); };
   addEventListener('resize', resize);
   document.querySelectorAll('[data-mode]').forEach(button => { button.onclick = () => launch(button.dataset.mode); });
   $('route-action').onclick = () => launch('express');
@@ -467,10 +556,14 @@ function setupEvents() {
     }
     if (anyDialog()) return;
     if (onboarding.waiting && !paused) {
-      if (['boost', 'zip'].includes(onboarding.stage) && ['ShiftLeft', 'ShiftRight'].includes(event.code)) {
+      if (onboarding.stage === 'complete' && ['Enter', 'Space'].includes(event.code)) { event.preventDefault(); if (!event.repeat) $('lesson-continue').click(); return; }
+      if (onboarding.stage === 'turn' && ['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(event.code)) {
+        event.preventDefault(); keys.add(event.code); onboardingPress(); return;
+      }
+      if (['boost', 'zip', 'leap'].includes(onboarding.stage) && ['ShiftLeft', 'ShiftRight'].includes(event.code)) {
         event.preventDefault(); if (!event.repeat) jumpAction(); return;
       }
-      if (event.code === 'Space' && ['hold', 'release'].includes(onboarding.stage)) {
+      if (event.code === 'Space' && ['hold', 'release', 'goal-release'].includes(onboarding.stage)) {
         event.preventDefault();
         if (!event.repeat) { keys.add('Space'); if (onboarding.stage === 'hold') onboardingPress(); }
       }
@@ -498,6 +591,7 @@ function setupEvents() {
       return;
     }
     if (paused) return;
+    if (['landing', 'seek-turn', 'goal-landed'].includes(onboarding.stage)) return;
     if (onboarding.stage === 'swing' && !['Space', 'KeyR'].includes(event.code)) return;
     keys.add(event.code);
     if (event.repeat) return;
@@ -512,7 +606,7 @@ function setupEvents() {
   addEventListener('blur', () => { clearInput(); if (started && !anyDialog()) setPaused(true); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { clearInput(); if (started) setPaused(true); } previousTime = performance.now(); });
   inputCleanups.push(bindJoystick($('steering-joystick'), {
-    enabled: () => started && !physics.lost && !paused && !anyDialog() && onboarding.freeControl,
+    enabled: () => started && !physics.lost && !paused && !anyDialog() && (onboarding.freeControl || onboarding.stage === 'turn'),
     change: (x, y) => {
       joystickSteering = x;
       joystickForward = -y;
@@ -550,24 +644,33 @@ function updatePhysics(dt) {
   const turn = physics.grounded ? 0 : steer, reel = 0;
   if (physics.grounded) physics.yaw = panView(physics.yaw, () => false, dt, -steer);
   physics.viewYaw = travelIntent(physics.vel, physics.yaw, steer);
-  const forward = (physics.grounded || physics.wallRun) ? THREE.MathUtils.clamp(Number(held('ArrowUp') || held('KeyW')) - Number(held('ArrowDown') || held('KeyS')) + joystickForward, -1, 1) : 0;
+  const forward = onboarding.freeControl && !onboarding.steeringLocked && (physics.grounded || physics.wallRun) ? THREE.MathUtils.clamp(Number(held('ArrowUp') || held('KeyW')) - Number(held('ArrowDown') || held('KeyS')) + joystickForward, -1, 1) : 0;
   const strafe = 0;
-  const heading = physics.grounded ? physics.yaw : travelIntent(physics.vel, physics.yaw, 0);
+  const zip = physics.pointZip;
+  // Show the incoming shot first; reveal the outward view in the final catch.
+  const perchReveal = (zip?.stage === 1 && physics.time - zip.settleAt >= .16)
+    || (physics.perch && physics.time - physics.perchedAt < .5);
+  const heading = zip ? (perchReveal ? zip.outwardYaw : zip.stage === 1 ? zip.arrivalYaw : travelIntent(physics.vel, physics.yaw, 0))
+    : physics.grounded ? physics.yaw : travelIntent(physics.vel, physics.yaw, 0);
   const difference = Math.atan2(Math.sin(heading-viewYaw),Math.cos(heading-viewYaw));
-  viewYaw += difference * (1-Math.exp(-dt*4));
+  viewYaw += difference * (1-Math.exp(-dt*(perchReveal ? 12 : 4)));
   // Steering brings the optional look offset back behind the horse.
   if (Math.abs(steer) > .05) orbit *= Math.exp(-dt * 4);
-  physics.step(dt, { turn, forward, strafe, reel, swingHeld: ['fall', 'seek-swing'].includes(onboarding.stage) ? false : held('Space'), swingTarget: undefined, autoRelease: onboarding.freeControl, boost: false });
+  physics.step(dt, { turn, forward, strafe, reel, swingHeld: ['fall', 'seek-swing'].includes(onboarding.stage) ? false : held('Space'), swingTarget: undefined, autoRelease: onboarding.freeControl && onboarding.stage !== 'turning', boost: false });
   const previousStage = onboarding.stage;
-  onboarding.update(physics);
+  onboarding.update(physics, mode === 'express' ? deliveryTarget(delivery) : null, steer, held('Space'));
   if (['fall', 'seek-zip'].includes(onboarding.stage)) {
     const action = physics.contextualAction(travelIntent(physics.vel, physics.yaw, 0));
     onboarding.updateContext(physics, action);
     if (onboarding.waiting) pointTarget = action.target || null;
   }
   if (previousStage !== onboarding.stage) {
-    if (onboarding.stage === 'hold') clearInput();
+    if (['hold', 'turn'].includes(onboarding.stage)) clearInput();
+    if (onboarding.stage === 'turn') turnViewCheckpoint = {
+      yaw:viewYaw, orbit, pitch, elapsed, position:camera.position.clone(), target:cameraTarget.clone(), tracked:cameraTrackedHorse.clone(),
+    };
     updateOnboarding();
+    if (onboarding.stage === 'complete') $('lesson-continue').focus();
   }
   const landed = (!wasPerched && physics.perch) || (!wasGrounded && physics.grounded);
   if (landed && !physics.lost) soundEffect('land');
@@ -584,6 +687,12 @@ function updatePhysics(dt) {
       toast('Package collected! Follow the new searchlight to deliver it.', 5000);
     } else if (event === 'delivered') finishRun();
   }
+  if (landed && onboarding.faceLanding(physics, mode === 'express' ? deliveryTarget(delivery) : null)) {
+    clearInput(); physics.vel = {x:0,y:0,z:0};
+    // Show the active objective after pickup has had a chance to advance it.
+    orbit = 0; pitch = .1; frameSelectedAnchor = false; facingAnchor = null; viewYaw = physics.yaw;
+    updateOnboarding(); $('lesson-continue').focus();
+  }
   return { turn, forward };
 }
 function updateHorse(dt, input) {
@@ -599,7 +708,7 @@ function updateHorse(dt, input) {
     position = physics.pos; speed = Math.hypot(physics.vel.x, physics.vel.z); grounded = physics.grounded; swinging = !!physics.anchor; verticalSpeed = physics.vel.y;
     const pitchGoal = grounded ? 0 : THREE.MathUtils.clamp(-physics.vel.y * .008, -.32, .3);
     flightRotation.x = grounded ? 0 : THREE.MathUtils.damp(flightRotation.x, pitchGoal, 4, dt);
-    flightRotation.y = grounded ? physics.yaw : travelIntent(physics.vel, physics.yaw, 0);
+    flightRotation.y = grounded || physics.pointZip?.stage === 1 ? physics.yaw : travelIntent(physics.vel, physics.yaw, 0);
     flightRotation.z = grounded ? 0 : THREE.MathUtils.damp(flightRotation.z, -input.turn * (preferences.reduceMotion ? .08 : .18 + feel.swing * .12), 5, dt);
     if (physics.wallRun) {
       climbNormal.copy(physics.wallRun.normal);
@@ -662,7 +771,7 @@ function updateCamera(dt) {
     desiredCamera.set(horsePosition.x + Math.sin(yaw) * distance, cameraTrackedHorse.y + 3 + pitch * distance + feel.height, horsePosition.z + Math.cos(yaw) * distance);
     desiredTarget.set(horsePosition.x - Math.sin(viewYaw) * 7, horsePosition.y + .8, horsePosition.z - Math.cos(viewYaw) * 7);
     // Look slightly into travel without overriding a manually panned view.
-    if (!frameSelectedAnchor && Math.abs(orbit) < .1 && speed > 1) {
+    if (!physics.pointZip && !frameSelectedAnchor && Math.abs(orbit) < .1 && speed > 1) {
       const alignment = (-Math.sin(viewYaw) * physics.vel.x - Math.cos(viewYaw) * physics.vel.z) / speed;
       const weight = Math.max(0, alignment) * (1 - Math.min(1, Math.abs(pitch - .1) * 3));
       desiredTarget.x += flightFrame.ahead.x * weight;
@@ -686,8 +795,9 @@ function updateCamera(dt) {
     previewAge += dt;
     revealAnchor(camera, cameraTarget, horsePosition, framedAnchor, previewStartOffset, previewLookOffset, previewAge, city.buildings, anchorViewState);
   } else {
-    camera.position.lerp(desiredCamera, 1 - Math.exp(-dt * (started ? 3.5 : 2.8)));
-    cameraTarget.lerp(desiredTarget, 1 - Math.exp(-dt * (started ? 3.5 : 7)));
+    const zipFraming = started && ((physics.pointZip?.stage === 1 && physics.time - physics.pointZip.settleAt >= .16) || (physics.perch && physics.time - physics.perchedAt < .5));
+    camera.position.lerp(desiredCamera, 1 - Math.exp(-dt * (zipFraming ? 12 : started ? 3.5 : 2.8)));
+    cameraTarget.lerp(desiredTarget, 1 - Math.exp(-dt * (zipFraming ? 12 : started ? 3.5 : 7)));
   }
   // Lagged/smoothed positions must be safe too, not just the desired endpoint.
   if (started && !framedAnchor) {
@@ -701,6 +811,11 @@ function updateCamera(dt) {
     camera.position.y = Math.max(camera.position.y, 2.7);
   }
   camera.lookAt(cameraTarget); camera.updateMatrixWorld(true);
+  if (onboarding.stage === 'landing' && physics.perch && !paused && !anyDialog()) {
+    const cameraYaw = Math.atan2(-(cameraTarget.x-camera.position.x), -(cameraTarget.z-camera.position.z));
+    const facingError = Math.abs(Math.atan2(Math.sin(cameraYaw-physics.yaw), Math.cos(cameraYaw-physics.yaw)));
+    if (facingError < Math.PI/60 && cameraTarget.distanceTo(desiredTarget) < .35 && onboarding.cameraSettled(physics)) updateOnboarding();
+  }
   sky.position.copy(camera.position);
   if (renderFrames % 8 === 0) { sun.position.set(horsePosition.x - 150, horsePosition.y + 105, horsePosition.z + 85); sun.target.position.copy(horsePosition); }
 }
@@ -951,6 +1066,7 @@ function frame(time) {
   requestAnimationFrame(frame);
   if (document.hidden) { previousTime = time; return; }
   const dt = Math.min((time - previousTime) / 1000, .05); previousTime = time;
+  if (onboarding.stage === 'turn' && !paused && !anyDialog()) onboardingPress();
   const playing = started && !physics.lost && !paused && !onboarding.waiting && !anyDialog();
   if (playing || !started) now += dt;
   let input = { turn: 0, forward: 0 };
@@ -959,7 +1075,7 @@ function frame(time) {
     while (accumulator >= 1 / 120 && !physics.lost && !paused && !onboarding.waiting && !anyDialog()) { input = updatePhysics(1 / 120); accumulator -= 1 / 120; }
   } else accumulator = 0;
   const visualDt = (playing && !physics.lost) || !started ? dt : 0;
-  updateHorse(visualDt, input); updateCamera(visualDt); updateRope(); updateParticles();
+  updateHorse(visualDt, input); updateCamera(onboarding.stage === 'complete' && !paused && !anyDialog() ? dt : visualDt); updateRope(); updateParticles();
   if (playing || !started) city.update(dt, now, preferences.reduceMotion);
   ropeRipple = Math.max(0, ropeRipple - dt * 2);
   skyMaterial.uniforms.time.value = now;
@@ -968,6 +1084,7 @@ function frame(time) {
 
   if (time - lastUI > 75) { updateUI(); updateAudio(); lastUI = time; }
   cinematics.setSpeedBurst(preferences.reduceMotion ? 0 : snapBurst());
+  boostSparks.update(visualDt, physics.vel, preferences.reduceMotion);
   updateLedgeMarker();
   positionOnboarding(visualDt);
   drawMinimap();

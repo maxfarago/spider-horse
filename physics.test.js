@@ -1096,6 +1096,10 @@ test('point zip allows rooftop movement but guards every edge until an explicit 
     p.zipToPoint(target);
     for (let i = 0; i < 2 / dt && !p.perch; i++) p.step(dt, { swingHeld: true });
     assert.ok(p.perch, 'zip should arrive and lock');
+    const outward={x:target.staging.x-target.landing.x,z:target.staging.z-target.landing.z};
+    const alignment=(-Math.sin(p.yaw)*outward.x-Math.cos(p.yaw)*outward.z)/Math.hypot(outward.x,outward.z);
+    assert.ok(alignment>0, 'perched horse faces outward along a clear departure');
+    assert.equal(Math.hypot(p.vel.x,p.vel.y,p.vel.z),0, 'arrival ends at rest');
     assert.ok(p.time < 1.2, 'zip should complete promptly');
     assert.ok(Math.hypot(p.pos.x-target.landing.x,p.pos.y-target.landing.y,p.pos.z-target.landing.z) < .01);
     const landing = { ...p.pos };
@@ -1291,7 +1295,8 @@ test('opening teaches boost, swing, soar and selected ledge zip with flight betw
     if(i%pollEvery===0)p.findAnchor();
     p.step(1/120,{swingHeld:lesson.stage==='swing',autoRelease:false});
     p.viewYaw=Math.atan2(-p.vel.x,-p.vel.z);
-    lesson.update(p);
+    lesson.update(p, createDelivery(city.buildings,city.spawn).pickup);
+    if (lesson.stage === 'landing' && p.perch) lesson.cameraSettled(p);
     if(['fall','seek-zip'].includes(lesson.stage))lesson.updateContext(p,p.contextualAction(p.viewYaw));
    }
   };
@@ -1305,7 +1310,32 @@ test('opening teaches boost, swing, soar and selected ledge zip with flight betw
   p.release({intentional:true});lesson.release(p.time);const releaseTime=p.time;
   runUntilPause();assert.equal(lesson.stage,'zip');assert.ok(p.time-releaseTime>=1.2);
   assert.ok(lesson.target?.anchor);assert.ok(p.contextualJump(p.viewYaw,lesson.target));lesson.shift(true,p.time);
-  assert.equal(lesson.stage,'done');assert.ok(p.pointZip);assert.equal(p.lost,false);
+  assert.equal(lesson.stage,'landing');assert.ok(p.pointZip);assert.equal(p.lost,false);
+  runUntilPause();assert.equal(lesson.stage,'leap');assert.ok(p.perch);assert.ok(p.time>=p.perchedAt);
+  assert.ok(p.contextualJump(p.yaw));lesson.shift(true,p.time);assert.equal(lesson.stage,'seek-turn');assert.ok(!p.perch && p.vel.y>0);
+  runUntilPause();assert.equal(lesson.stage,'turn');
+  assert.ok(p.vel.y<=-18,'turn lesson waits for downward momentum');
+  assert.ok(p.pos.y<=lesson.leapHeight-8,'turn lesson happens below the launch ledge');
+  const goal=createDelivery(city.buildings,city.spawn).pickup;
+  const error=()=>Math.abs(Math.atan2(Math.sin(Math.atan2(-(goal.x-p.pos.x),-(goal.z-p.pos.z))-Math.atan2(-p.vel.x,-p.vel.z)),Math.cos(Math.atan2(-(goal.x-p.pos.x),-(goal.z-p.pos.z))-Math.atan2(-p.vel.x,-p.vel.z))));
+  const before=error();
+  const checkpoint={pos:{...p.pos},vel:{...p.vel},time:p.time};
+  for(let retry=0;retry<2;retry++) {
+    assert.ok(p.attach(lesson.anchor));lesson.press();
+    for(let i=0;i<30;i++)p.step(1/120,{turn:lesson.direction,swingHeld:true,autoRelease:false});
+    assert.ok(lesson.retryTurn(p));assert.equal(lesson.stage,'turn');
+    assert.deepEqual(p.pos,checkpoint.pos);assert.deepEqual(p.vel,checkpoint.vel);assert.equal(p.time,checkpoint.time);
+    assert.equal(p.anchor,null);
+  }
+  assert.ok(p.attach(lesson.anchor));lesson.press();
+  for(let i=0;i<600 && lesson.stage==='turning';i++) {
+    p.step(1/120,{turn:lesson.direction,swingHeld:true,autoRelease:false});
+    lesson.update(p,goal,lesson.direction,true);
+  }
+  assert.equal(lesson.stage,'goal-release');assert.equal(lesson.retryTurn(p),false,'release at the prompt must not rewind');assert.ok(error()<=Math.PI/18,'release points toward goal');
+  assert.ok(p.vel.y>=3);
+  p.release({intentional:true});lesson.release(p.time);assert.equal(lesson.stage,'done');
+
  }
 });
 
@@ -1320,6 +1350,61 @@ test('lessons ignore unavailable actions and require successful input', () => {
  l.stage='release';l.release(3);l.updateContext({...p,time:3.5},{kind:'perch',target:{anchor:{}}});assert.equal(l.waiting,false);
  l.updateContext({...p,time:5},{kind:'perch'});assert.equal(l.waiting,false);
  l.updateContext({...p,time:5},{kind:'perch',target:{anchor:{}}});assert.equal(l.stage,'zip');
- l.shift(false,5);assert.equal(l.stage,'zip');l.shift(true,5);assert.equal(l.stage,'done');
+ l.shift(false,5);assert.equal(l.stage,'zip');l.shift(true,5);assert.equal(l.stage,'landing');
+ l.update({...p,time:6,perch:{},perchedAt:5.9});assert.equal(l.stage,'landing');
+ l.update({...p,time:7,perch:{},perchedAt:5.9});assert.equal(l.stage,'landing','time alone must not show leap');
+ assert.equal(l.cameraSettled({...p,perch:null}),false);
+ l.cameraSettled({...p,perch:{},pos:{y:60}});assert.equal(l.stage,'leap');
+ l.shift(false,7);assert.equal(l.stage,'leap');l.shift(true,7);assert.equal(l.stage,'seek-turn');
  l.reset();assert.equal(l.target,null);
+});
+
+test('zip perches at the visible roof rim and on top of raised perimeter trim', () => {
+  for (const dt of [1/30, 1/60, 1/120]) {
+    const p = new SwingPhysics({
+      spawn:{x:8,y:20,z:0}, initialVelocity:{x:0,y:0,z:-20},
+      buildings:[{x:0,z:-40,width:20,depth:20,height:30,roofHeight:30.6}],
+      rooftopObstacles:[{minX:-10.3,maxX:10.3,minZ:-30.225,maxZ:-29.775,minY:30.4,height:31.2}],
+      anchors:[{x:10.2,y:31.2,z:-29.8}],
+    });
+    const target=p.pointCandidate(0);
+    assert.ok(target);
+    assert.ok(Math.abs(target.landing.x-10)<.5);
+    assert.ok(Math.abs(target.landing.z+30)<.5);
+    assert.ok(Math.abs(target.landing.y-2.2-31.2)<.01, 'hooves land on trim, above the deck');
+    assert.ok(p.zipToPoint(target));
+    for(let i=0;i<2/dt && !p.perch;i++)p.step(dt);
+    assert.ok(p.perch, 'raised rim remains reachable through collision sweeps');
+    const position={...p.pos};
+    for(let i=0;i<30;i++)p.step(dt);
+    assert.deepEqual(p.pos,position,'idle perch does not clamp back into the roof');
+  }
+});
+
+
+test('first landing after the final release faces the active goal only once', () => {
+  const lesson = new SwingOnboarding(); lesson.reset();
+  const p={pos:{x:10,y:50,z:20},yaw:0,viewYaw:0,grounded:true,lost:false,time:20};
+  const goal={x:-30,z:70};
+  assert.equal(lesson.faceLanding(p,goal),false,'earlier ledge facing is preserved');
+  lesson.stage='goal-release';lesson.release(10);
+  assert.equal(lesson.steeringLocked,true,'final release disables steering');
+  p.grounded=false;
+  assert.equal(lesson.faceLanding(p,goal),false,'flight heading is preserved');
+  assert.equal(lesson.steeringLocked,true,'steering stays locked in flight');
+  p.grounded=true;p.lost=true;
+  assert.equal(lesson.faceLanding(p,goal),false,'fatal street contact is ignored');
+  p.lost=false;
+  assert.equal(lesson.faceLanding(p,goal),true);
+  assert.equal(lesson.steeringLocked,false,'landing restores steering');
+  assert.equal(lesson.stage,'complete','landing immediately shows the final modal');
+  assert.equal(lesson.waiting,true);assert.equal(lesson.freeControl,false);
+  lesson.finish();assert.equal(lesson.stage,'done');assert.equal(lesson.freeControl,true);
+  assert.ok(Math.abs(p.yaw-Math.atan2(40,-50))<1e-9);
+  assert.equal(p.viewYaw,p.yaw);
+  p.yaw=1;
+  assert.equal(lesson.faceLanding(p,goal),false);assert.equal(p.yaw,1);
+  lesson.stage='goal-release';lesson.release(12);lesson.reset();
+  assert.equal(lesson.faceLanding(p,goal),false,'restart clears pending facing');
+  assert.equal(lesson.steeringLocked,false,'restart restores steering');
 });

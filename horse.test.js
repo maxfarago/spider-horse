@@ -308,3 +308,41 @@ test('vertical wall ascent runs all four legs, freezes on pause and settles on l
   advance(horse, .2, { grounded: true, perched: true, speed: 0 });
   feet.forEach((name, i) => assert.ok(positionOf(horse, name).distanceTo(landed[i]) < .001, `${name} must settle after landing`));
 });
+
+test('ledge perch lowers the saddle over tucked rear hooves while keeping feet planted', async t => {
+  const horse = await horseFixture(t);
+  advance(horse, .5, { grounded: true, speed: 0 });
+  const standingSaddle = positionOf(horse, 'saddle_socket');
+  const standingFeet = feet.map(name => positionOf(horse, name));
+  horse.update(1 / 60, { grounded: true, perched: true, speed: 0 });
+  assert.ok(positionOf(horse, 'saddle_socket').y < standingSaddle.y - .4);
+  feet.forEach((name, i) => {
+    const foot = positionOf(horse, name);
+    assert.ok(Math.abs(foot.y - standingFeet[i].y) < .03, `${name} stays on its support plane`);
+    if (name.startsWith('toe')) assert.ok(Math.abs(foot.z) < Math.abs(standingFeet[i].z) * .5, 'rear hooves tuck under the body');
+  });
+  const perched = snapshot(horse);
+  horse.update(0, { grounded: true, perched: true, speed: 0 });
+  assert.deepEqual(snapshot(horse), perched);
+  advance(horse, .5, { grounded: true, perched: true, speed: 5 });
+  assert.ok(snapshot(horse).every(Number.isFinite));
+});
+
+test('ledge leap sweeps all hooves behind their shoulders and hips with the head forward', async t => {
+  const horse=await horseFixture(t);
+  advance(horse,.3,{grounded:false,speed:32,verticalSpeed:15,feel:{leap:1}});
+  for(const side of ['L','R']) {
+    for(const [root,hoof] of [['upperarm','finger'],['thigh','toe']]) {
+      const base=horse.group.worldToLocal(positionOf(horse,`${root}_${side}`));
+      const tip=horse.group.worldToLocal(positionOf(horse,`${hoof}_${side}`));
+      assert.ok(tip.z>base.z+.5, `${hoof}_${side} trails behind the body`);
+    }
+  }
+  const neck=horse.group.worldToLocal(positionOf(horse,'neck_02'));
+  const head=horse.group.worldToLocal(positionOf(horse,'head'));
+  assert.ok(head.z<neck.z);
+  assert.ok(Math.abs(head.y-neck.y)<.05,'head reaches straight forward');
+  const frozen=snapshot(horse);horse.update(0,{feel:{leap:1}});assert.deepEqual(snapshot(horse),frozen);
+  advance(horse,.5,{grounded:true,perched:true,speed:0});
+  assert.ok(snapshot(horse).every(Number.isFinite));
+});
