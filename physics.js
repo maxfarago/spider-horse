@@ -116,6 +116,7 @@ export class SwingPhysics {
     this.pointZip = null;
     this.perch = null;
     this.perchedAt = -Infinity;
+    this.leapedAt = -Infinity;
     this.pointLaunchUntil = -Infinity;
     this.airZipUntil = -Infinity;
     this.zipBurstAt = -Infinity;
@@ -509,15 +510,46 @@ export class SwingPhysics {
       const delta={x:staging.x-this.pos.x,y:staging.y-this.pos.y,z:staging.z-this.pos.z};
       const distance=length(delta);
       if(Math.abs(delta.y)>Math.hypot(delta.x,delta.z)*.75 || distance<5 || distance>65 || this.buildings.some(b=>sweepBox(this.pos,delta,b)))continue;
-      // Colliders are expanded by BODY_RADIUS; inset again to keep the horse on the roof.
-      const roof={minX:box.minX+2*BODY_RADIUS+.5,maxX:box.maxX-2*BODY_RADIUS-.5,minZ:box.minZ+2*BODY_RADIUS+.5,maxZ:box.maxZ-2*BODY_RADIUS-.5};
-      const landing={x:clamp(anchor.x,roof.minX+1,roof.maxX-1),y:box.maxY+EPSILON,z:clamp(anchor.z,roof.minZ+1,roof.maxZ-1)};
+      // Undo the collision hull expansion: the perch belongs on the visible rim,
+      // not several metres inside it. Keep the compact hoof stance over the edge.
+      const roof={minX:box.minX+BODY_RADIUS+.45,maxX:box.maxX-BODY_RADIUS-.45,minZ:box.minZ+BODY_RADIUS+.45,maxZ:box.maxZ-BODY_RADIUS-.45};
+      const landing={x:clamp(anchor.x,roof.minX,roof.maxX),y:box.maxY+EPSILON,z:clamp(anchor.z,roof.minZ,roof.maxZ)};
+      // Perimeter trim is higher than the roof deck. Land on its top surface.
+      for (const obstacle of this.rooftopObstacles) {
+        if (landing.x>obstacle.minX && landing.x<obstacle.maxX && landing.z>obstacle.minZ && landing.z<obstacle.maxZ)
+          landing.y=Math.max(landing.y,obstacle.maxY+EPSILON);
+      }
       const approach={x:landing.x-staging.x,y:landing.y-staging.y,z:landing.z-staging.z};
       if(this.rooftopObstacles.some(b=>sweepBox(this.pos,delta,b) || sweepBox(staging,approach,b)))continue;
       const score=alignment*100-distance*.5;
       if(score>bestScore){bestScore=score;best={anchor,staging,landing,roof};}
     }
     return best;
+  }
+
+  ledgeDepartureYaw(landing, outwardYaw) {
+    // Pick a street-facing departure while the zip begins, so the perch and
+    // camera agree with the eventual leap. Forecast the launch, not just a ray.
+    const nearby=this.buildings.filter(b=>b.maxX>landing.x-90 && b.minX<landing.x+90 && b.maxZ>landing.z-90 && b.minZ<landing.z+90);
+    const obstacles=[...nearby,...this.rooftopObstacles.filter(b=>b.maxX>landing.x-90 && b.minX<landing.x+90 && b.maxZ>landing.z-90 && b.minZ<landing.z+90)];
+    let bestYaw=outwardYaw,bestScore=-Infinity;
+    for(let degrees=-85;degrees<=85;degrees+=5) {
+      const yaw=outwardYaw+degrees*Math.PI/180;
+      const velocity={x:-Math.sin(yaw)*32,y:15,z:-Math.cos(yaw)*32};
+      const position=copy(landing);let clearTime=0,street=0;
+      for(let step=0;step<60;step++) {
+        const dt=1/30;
+        velocity.y-=GRAVITY*dt;
+        const delta={x:velocity.x*dt,y:velocity.y*dt,z:velocity.z*dt};
+        if(obstacles.some(b=>sweepBox(position,delta,b)))break;
+        position.x+=delta.x;position.y+=delta.y;position.z+=delta.z;
+        clearTime+=dt;
+        if(!nearby.some(b=>position.x>b.minX && position.x<b.maxX && position.z>b.minZ && position.z<b.maxZ))street+=dt;
+      }
+      const score=clearTime*100+street*30-Math.abs(degrees)*.12;
+      if(score>bestScore){bestScore=score;bestYaw=yaw;}
+    }
+    return bestYaw;
   }
 
   zipToPoint(candidate) {
@@ -529,7 +561,8 @@ export class SwingPhysics {
     this.release(); this.wallRun=null; this.vaultUntil=-Infinity;
     const dx=current.landing.x-this.pos.x,dz=current.landing.z-this.pos.z,n=Math.hypot(dx,dz)||1;
     this.pointLaunchDirection={x:dx/n,z:dz/n};
-    this.pointZip={...current,stage:0,startedAt:this.time,until:this.time+2.5};
+    const outwardYaw=this.ledgeDepartureYaw(current.landing,Math.atan2(-(current.staging.x-current.landing.x),-(current.staging.z-current.landing.z)));
+    this.pointZip={...current,outwardYaw,stage:0,startedAt:this.time,until:this.time+3};
     this.zipBurstAt=this.time;
     this.pointLaunchUntil=-Infinity; this.heldAttachmentSpent=true; this.grounded=false;
     return true;
@@ -540,6 +573,7 @@ export class SwingPhysics {
     if(this.lost || (!this.perch && !near && this.time>this.pointLaunchUntil))return false;
     if(this.perch) this.pointLaunchDirection={x:-Math.sin(this.yaw),z:-Math.cos(this.yaw)};
     this.perch=null;
+    this.leapedAt=this.time;
     this.heldAttachmentSpent=true;this.swingRearmAt=this.time+.18;
     this.pointZip=null; this.pointLaunchUntil=-Infinity; this.grounded=false;
     this.vel={x:this.pointLaunchDirection.x*32,y:15,z:this.pointLaunchDirection.z*32};
@@ -587,16 +621,30 @@ export class SwingPhysics {
     let target=zip.stage===0?zip.staging:zip.landing;
     let delta={x:target.x-this.pos.x,y:target.y-this.pos.y,z:target.z-this.pos.z};
     let distance=length(delta);
-    if(distance<.4) {
-      if(zip.stage===0){this.pointZip={...zip,stage:1};return true;}
+    if(zip.stage===0 ? distance<.4 : this.time-zip.settleAt>=.28) {
+      if(zip.stage===0){
+        this.pointZip={...zip,stage:1,settleAt:this.time-dt,settleFrom:copy(this.pos),arrivalYaw:Math.atan2(-this.vel.x,-this.vel.z)};
+        return this.updatePointZip(dt);
+      }
       // Sweep the last centimetres, then hold the exact roof contact until launch.
       if(this.move(delta)){this.pointZip=null;this.pointLaunchUntil=-Infinity;return true;}
       this.perch={...target,roof:zip.roof};this.perchedAt=this.time;
-      this.yaw=Math.atan2(-this.pointLaunchDirection.x,-this.pointLaunchDirection.z);
+      this.yaw=zip.outwardYaw;
       this.pointZip=null;this.pointLaunchUntil=-Infinity;this.vel={x:0,y:0,z:0};
       this.grounded=true;this.soarUntil=-Infinity;return true;
     }
-    const pullSpeed=zip.stage===0 ? Math.min(78,34+(this.time-zip.startedAt)*300) : Math.max(16,Math.min(60,Math.sqrt(320*distance)));
+    if(zip.stage===1) {
+      const progress=clamp((this.time-zip.settleAt)/.28,0,1);
+      const eased=1-Math.pow(1-progress,3);
+      const next={x:zip.settleFrom.x+(target.x-zip.settleFrom.x)*eased,y:zip.settleFrom.y+(target.y-zip.settleFrom.y)*eased,z:zip.settleFrom.z+(target.z-zip.settleFrom.z)*eased};
+      const movement={x:next.x-this.pos.x,y:next.y-this.pos.y,z:next.z-this.pos.z};
+      const turn=Math.atan2(Math.sin(zip.outwardYaw-zip.arrivalYaw),Math.cos(zip.outwardYaw-zip.arrivalYaw));
+      this.yaw=zip.arrivalYaw+turn*eased;
+      this.vel={x:movement.x/dt,y:movement.y/dt,z:movement.z/dt};
+      if(this.move(movement)){this.pointZip=null;this.pointLaunchUntil=-Infinity;}
+      return true;
+    }
+    const pullSpeed=Math.min(78,34+(this.time-zip.startedAt)*300);
     const speed=Math.min(pullSpeed,distance/dt);
     this.vel={x:delta.x/distance*speed,y:delta.y/distance*speed,z:delta.z/distance*speed};
     const collided=this.move({x:this.vel.x*dt,y:this.vel.y*dt,z:this.vel.z*dt});
